@@ -1,0 +1,25 @@
+[package]
+name = "rspace-registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OCI Distribution Spec v1.1 registry head, built on rspace-registry-core"
+
+[[bin]]
+name = "rspace-registry"
+path = "src/main.rs"
+
+[dependencies]
+rspace-registry-core = { path = "../rspace-registry-core" }
+rspace-registry-fs = { path = "../rspace-registry-fs" }
+
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

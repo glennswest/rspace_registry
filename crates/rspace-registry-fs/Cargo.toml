@@ -1,0 +1,18 @@
+[package]
+name = "rspace-registry-fs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Filesystem-backed Storage implementation for rspace-registry"
+
+[dependencies]
+rspace-registry-core = { path = "../rspace-registry-core" }
+
+async-trait.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

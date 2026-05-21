@@ -1,0 +1,58 @@
+[workspace]
+members = [
+    "crates/rspace-registry",
+    "crates/rspace-registry-core",
+    "crates/rspace-registry-fs",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+authors = ["Glenn West"]
+license = "MIT"
+repository = "https://github.com/glennswest/rspace_registry"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# HTTP framework — axum for ecosystem fit + async-first
+axum = { version = "0.7", features = ["macros", "tokio"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "compression-gzip"] }
+hyper = "1"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# OCI digests + manifests
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+# Errors + logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Storage
+tokio-util = { version = "0.7", features = ["io"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
