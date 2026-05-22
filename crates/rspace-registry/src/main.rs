@@ -48,7 +48,9 @@ async fn main() -> Result<()> {
         "rspace-registry starting"
     );
     if cli.auth_file.is_none() {
-        tracing::warn!("no --auth-file set; registry is unauthenticated. NEVER do this in production.");
+        tracing::warn!(
+            "no --auth-file set; registry is unauthenticated. NEVER do this in production."
+        );
     }
 
     // TODO: build Storage backend → router → listen

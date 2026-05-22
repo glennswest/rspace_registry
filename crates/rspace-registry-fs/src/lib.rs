@@ -40,15 +40,15 @@ impl FsStorage {
             rspace_registry_core::digest::Algorithm::Sha512 => "sha512",
         };
         let prefix = &d.hex[0..2];
-        self.root
-            .join("blobs")
-            .join(alg)
-            .join(prefix)
-            .join(&d.hex)
+        self.root.join("blobs").join(alg).join(prefix).join(&d.hex)
     }
 
     fn manifest_tag_path(&self, repo: &str, tag: &str) -> PathBuf {
-        self.root.join("manifests").join(repo).join("tags").join(tag)
+        self.root
+            .join("manifests")
+            .join(repo)
+            .join("tags")
+            .join(tag)
     }
 
     fn manifest_digest_path(&self, repo: &str, d: &Digest) -> PathBuf {
@@ -176,17 +176,16 @@ impl Storage for FsStorage {
         };
         Self::atomic_write(&self.manifest_digest_path(repo, &digest), content).await?;
         if let Reference::Tag(tag) = reference {
-            Self::atomic_write(&self.manifest_tag_path(repo, tag), digest.to_string().as_bytes())
-                .await?;
+            Self::atomic_write(
+                &self.manifest_tag_path(repo, tag),
+                digest.to_string().as_bytes(),
+            )
+            .await?;
         }
         Ok(digest)
     }
 
-    async fn manifest_delete(
-        &self,
-        repo: &str,
-        reference: &Reference,
-    ) -> Result<(), StorageError> {
+    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError> {
         let path = match reference {
             Reference::Digest(d) => self.manifest_digest_path(repo, d),
             Reference::Tag(t) => self.manifest_tag_path(repo, t),

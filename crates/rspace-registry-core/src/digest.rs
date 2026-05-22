@@ -110,7 +110,8 @@ mod tests {
 
     #[test]
     fn reject_non_hex() {
-        let r: Result<Digest, _> = "sha256:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".parse();
+        let r: Result<Digest, _> =
+            "sha256:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".parse();
         assert!(matches!(r, Err(DigestError::NonHex)));
     }
 
