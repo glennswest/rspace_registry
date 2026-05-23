@@ -3,7 +3,13 @@
 //! `rspace-registry-rspacefs`).
 
 pub mod digest;
+pub mod gc;
+pub mod manifest;
 pub mod storage;
 
 pub use digest::Digest;
-pub use storage::{Reference, Storage, StorageError};
+pub use manifest::{
+    parse_manifest_refs, Descriptor, Manifest, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE,
+    OCI_MANIFEST_MEDIA_TYPE,
+};
+pub use storage::{Reference, Storage, StorageError, UploadStatus};
