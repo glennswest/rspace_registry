@@ -15,6 +15,19 @@ repository = "https://github.com/glennswest/rspace_registry"
 rust-version = "1.75"
 
 [workspace.dependencies]
+# Crypto / auth
+bcrypt = "0.15"
+base64 = "0.22"
+
+# TLS
+rustls = "0.23"
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+
+# Test helpers
+tempfile = "3"
+
 # HTTP framework — axum for ecosystem fit + async-first
 axum = { version = "0.7", features = ["macros", "tokio"] }
 tower = "0.4"

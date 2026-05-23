@@ -1,0 +1,632 @@
+//! OCI Distribution Spec v1.1 endpoint handlers.
+//!
+//! The catchall in `router.rs` parses an incoming `(method, path)` into a
+//! single `Op` enum, then dispatches into one function per operation here.
+//! This keeps each handler small and the routing decisions in one place.
+
+use std::str::FromStr;
+use std::sync::Arc;
+
+use axum::body::Bytes;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use rspace_registry_core::{
+    gc, parse_manifest_refs, Digest, Reference, Storage, StorageError, MANIFEST_MEDIA_TYPES,
+    OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
+};
+use serde::Serialize;
+use serde_json::json;
+use sha2::{Digest as _, Sha256};
+use uuid::Uuid;
+
+use crate::error::{OciCode, OciError};
+
+pub type SharedStorage = Arc<dyn Storage>;
+
+// ---------------------------------------------------------------------------
+// Repo names
+// ---------------------------------------------------------------------------
+
+/// Validate an OCI repository name per the v1.1 spec.
+pub fn validate_repo_name(name: &str) -> Result<(), OciError> {
+    if name.is_empty() || name.len() > 255 {
+        return Err(OciError::new(OciCode::NameInvalid, "name out of range"));
+    }
+    for component in name.split('/') {
+        if component.is_empty() {
+            return Err(OciError::new(OciCode::NameInvalid, "empty path component"));
+        }
+        let mut chars = component.chars();
+        let first = chars.next().unwrap();
+        if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+            return Err(OciError::new(
+                OciCode::NameInvalid,
+                "component must start with [a-z0-9]",
+            ));
+        }
+        for c in chars {
+            if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-')
+            {
+                return Err(OciError::new(
+                    OciCode::NameInvalid,
+                    "component contains invalid character",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_reference(s: &str) -> Reference {
+    if let Ok(d) = Digest::from_str(s) {
+        Reference::Digest(d)
+    } else {
+        Reference::Tag(s.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Version + base
+// ---------------------------------------------------------------------------
+
+pub async fn version_check() -> Response {
+    let mut h = HeaderMap::new();
+    h.insert(
+        HeaderName::from_static("docker-distribution-api-version"),
+        HeaderValue::from_static("registry/2.0"),
+    );
+    (StatusCode::OK, h, "{}").into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Catalog + tags
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct CatalogBody {
+    repositories: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TagsBody<'a> {
+    name: &'a str,
+    tags: Vec<String>,
+}
+
+pub async fn catalog(
+    storage: SharedStorage,
+    n: Option<usize>,
+    last: Option<String>,
+) -> Result<Response, OciError> {
+    let mut repos = storage.list_repos().await?;
+    if let Some(after) = last {
+        repos.retain(|r| *r > after);
+    }
+    let truncated = if let Some(limit) = n {
+        let was_more = repos.len() > limit;
+        repos.truncate(limit);
+        was_more
+    } else {
+        false
+    };
+
+    let mut h = HeaderMap::new();
+    if truncated {
+        if let Some(last) = repos.last() {
+            let link = format!(
+                "</v2/_catalog?n={}&last={}>; rel=\"next\"",
+                n.unwrap_or(0),
+                last
+            );
+            if let Ok(v) = HeaderValue::from_str(&link) {
+                h.insert(header::LINK, v);
+            }
+        }
+    }
+    Ok((
+        StatusCode::OK,
+        h,
+        axum::Json(CatalogBody { repositories: repos }),
+    )
+        .into_response())
+}
+
+pub async fn tags_list(
+    storage: SharedStorage,
+    repo: &str,
+    n: Option<usize>,
+    last: Option<String>,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let mut tags = storage.list_tags(repo).await?;
+    if tags.is_empty() {
+        // Per spec: a repo with no tags should still 404 the tags-list endpoint.
+        let has_repo = storage.list_repos().await?.iter().any(|r| r == repo);
+        if !has_repo {
+            return Err(OciError::new(OciCode::NameUnknown, "repository not found"));
+        }
+    }
+    if let Some(after) = last {
+        tags.retain(|t| *t > after);
+    }
+    let truncated = if let Some(limit) = n {
+        let was_more = tags.len() > limit;
+        tags.truncate(limit);
+        was_more
+    } else {
+        false
+    };
+
+    let mut h = HeaderMap::new();
+    if truncated {
+        if let Some(last) = tags.last() {
+            let link = format!(
+                "</v2/{}/tags/list?n={}&last={}>; rel=\"next\"",
+                repo,
+                n.unwrap_or(0),
+                last
+            );
+            if let Ok(v) = HeaderValue::from_str(&link) {
+                h.insert(header::LINK, v);
+            }
+        }
+    }
+    Ok((StatusCode::OK, h, axum::Json(TagsBody { name: repo, tags })).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Manifests
+// ---------------------------------------------------------------------------
+
+fn manifest_media_type(bytes: &[u8], hinted: Option<&str>) -> String {
+    if let Some(h) = hinted {
+        if MANIFEST_MEDIA_TYPES.contains(&h) {
+            return h.to_string();
+        }
+    }
+    // Sniff: an image index has a `manifests` array; an image manifest has
+    // `layers`. We default to OCI image manifest for everything else.
+    match parse_manifest_refs(bytes) {
+        Ok(m) if !m.manifests.is_empty() => OCI_INDEX_MEDIA_TYPE.to_string(),
+        _ => OCI_MANIFEST_MEDIA_TYPE.to_string(),
+    }
+}
+
+pub async fn manifest_get(
+    storage: SharedStorage,
+    repo: &str,
+    reference: &str,
+    head_only: bool,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let r = parse_reference(reference);
+    let bytes = match storage.manifest_get(repo, &r).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return Err(OciError::new(OciCode::ManifestUnknown, "manifest unknown"))
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let digest = Digest {
+        algorithm: rspace_registry_core::digest::Algorithm::Sha256,
+        hex: hex::encode(Sha256::digest(&bytes)),
+    };
+    let media = manifest_media_type(&bytes, None);
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&media).expect("media type is ascii"),
+    );
+    h.insert(
+        HeaderName::from_static("docker-content-digest"),
+        HeaderValue::from_str(&digest.to_string()).unwrap(),
+    );
+    h.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&bytes.len().to_string()).unwrap(),
+    );
+
+    if head_only {
+        Ok((StatusCode::OK, h).into_response())
+    } else {
+        Ok((StatusCode::OK, h, bytes).into_response())
+    }
+}
+
+pub async fn manifest_put(
+    storage: SharedStorage,
+    repo: &str,
+    reference: &str,
+    content_type: Option<String>,
+    body: Bytes,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    // Reject obviously non-JSON payloads early.
+    if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
+        return Err(OciError::new(OciCode::ManifestInvalid, "not valid JSON"));
+    }
+    let r = parse_reference(reference);
+    let digest = storage.manifest_put(repo, &r, &body).await?;
+
+    // If the client referenced this manifest by digest, the digest in the
+    // URL must match what we computed.
+    if let Reference::Digest(want) = &r {
+        if want != &digest {
+            return Err(OciError::new(
+                OciCode::DigestInvalid,
+                format!("path digest {want} does not match computed {digest}"),
+            ));
+        }
+    }
+
+    let media = manifest_media_type(&body, content_type.as_deref());
+
+    let mut h = HeaderMap::new();
+    let location = format!("/v2/{repo}/manifests/{digest}");
+    h.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-content-digest"),
+        HeaderValue::from_str(&digest.to_string()).unwrap(),
+    );
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&media).unwrap(),
+    );
+    Ok((StatusCode::CREATED, h).into_response())
+}
+
+pub async fn manifest_delete(
+    storage: SharedStorage,
+    repo: &str,
+    reference: &str,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let r = parse_reference(reference);
+    match storage.manifest_delete(repo, &r).await {
+        Ok(()) => Ok((StatusCode::ACCEPTED, HeaderMap::new()).into_response()),
+        Err(StorageError::NotFound) => {
+            Err(OciError::new(OciCode::ManifestUnknown, "manifest unknown"))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blobs
+// ---------------------------------------------------------------------------
+
+pub async fn blob_get(
+    storage: SharedStorage,
+    repo: &str,
+    digest_str: &str,
+    head_only: bool,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let digest = parse_digest(digest_str)?;
+    let bytes = match storage.blob_read(&digest).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return Err(OciError::new(OciCode::BlobUnknown, "blob unknown"))
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    h.insert(
+        HeaderName::from_static("docker-content-digest"),
+        HeaderValue::from_str(&digest.to_string()).unwrap(),
+    );
+    h.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&bytes.len().to_string()).unwrap(),
+    );
+
+    if head_only {
+        Ok((StatusCode::OK, h).into_response())
+    } else {
+        Ok((StatusCode::OK, h, bytes).into_response())
+    }
+}
+
+pub async fn blob_delete(
+    storage: SharedStorage,
+    repo: &str,
+    digest_str: &str,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let digest = parse_digest(digest_str)?;
+    match storage.blob_delete(&digest).await {
+        Ok(()) => Ok((StatusCode::ACCEPTED, HeaderMap::new()).into_response()),
+        Err(StorageError::NotFound) => Err(OciError::new(OciCode::BlobUnknown, "blob unknown")),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn parse_digest(s: &str) -> Result<Digest, OciError> {
+    Digest::from_str(s)
+        .map_err(|e| OciError::new(OciCode::DigestInvalid, format!("invalid digest: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Blob uploads (POST init, PATCH chunk, PUT finalise, GET status, DELETE cancel)
+// ---------------------------------------------------------------------------
+
+pub async fn upload_start(
+    storage: SharedStorage,
+    repo: &str,
+    digest_q: Option<String>,
+    mount_q: Option<String>,
+    from_q: Option<String>,
+    body: Bytes,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+
+    // Cross-repo mount: if the source blob exists, return 201 immediately.
+    if let Some(digest_s) = mount_q {
+        let _from = from_q;
+        if let Ok(digest) = Digest::from_str(&digest_s) {
+            if storage.blob_exists(&digest).await? {
+                let mut h = HeaderMap::new();
+                let loc = format!("/v2/{repo}/blobs/{digest}");
+                h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+                h.insert(
+                    HeaderName::from_static("docker-content-digest"),
+                    HeaderValue::from_str(&digest.to_string()).unwrap(),
+                );
+                return Ok((StatusCode::CREATED, h).into_response());
+            }
+        }
+        // Source doesn't exist → fall through to a normal upload session.
+    }
+
+    // Monolithic upload: POST + ?digest=<d> with body.
+    if let Some(digest_s) = digest_q {
+        let digest = parse_digest(&digest_s)?;
+        storage.blob_write(&digest, &body).await?;
+        let mut h = HeaderMap::new();
+        let loc = format!("/v2/{repo}/blobs/{digest}");
+        h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+        h.insert(
+            HeaderName::from_static("docker-content-digest"),
+            HeaderValue::from_str(&digest.to_string()).unwrap(),
+        );
+        return Ok((StatusCode::CREATED, h).into_response());
+    }
+
+    // Normal: start a new upload session.
+    let session = storage.upload_create().await?;
+    let mut h = HeaderMap::new();
+    let loc = format!("/v2/{repo}/blobs/uploads/{}", session.id);
+    h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-upload-uuid"),
+        HeaderValue::from_str(&session.id.to_string()).unwrap(),
+    );
+    h.insert(
+        header::RANGE,
+        HeaderValue::from_str("0-0").unwrap(),
+    );
+    Ok((StatusCode::ACCEPTED, h).into_response())
+}
+
+fn parse_uuid(s: &str) -> Result<Uuid, OciError> {
+    Uuid::parse_str(s)
+        .map_err(|_| OciError::new(OciCode::BlobUploadInvalid, "invalid upload uuid"))
+}
+
+pub async fn upload_status(
+    storage: SharedStorage,
+    repo: &str,
+    uuid: &str,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let id = parse_uuid(uuid)?;
+    let status = match storage.upload_status(id).await {
+        Ok(s) => s,
+        Err(StorageError::NotFound) => {
+            return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut h = HeaderMap::new();
+    let loc = format!("/v2/{repo}/blobs/uploads/{id}");
+    h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-upload-uuid"),
+        HeaderValue::from_str(&id.to_string()).unwrap(),
+    );
+    let range = if status.offset == 0 {
+        "0-0".to_string()
+    } else {
+        format!("0-{}", status.offset.saturating_sub(1))
+    };
+    h.insert(header::RANGE, HeaderValue::from_str(&range).unwrap());
+    Ok((StatusCode::NO_CONTENT, h).into_response())
+}
+
+pub async fn upload_chunk(
+    storage: SharedStorage,
+    repo: &str,
+    uuid: &str,
+    body: Bytes,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let id = parse_uuid(uuid)?;
+    let status = match storage.upload_append(id, &body).await {
+        Ok(s) => s,
+        Err(StorageError::NotFound) => {
+            return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut h = HeaderMap::new();
+    let loc = format!("/v2/{repo}/blobs/uploads/{id}");
+    h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-upload-uuid"),
+        HeaderValue::from_str(&id.to_string()).unwrap(),
+    );
+    let range = format!("0-{}", status.offset.saturating_sub(1));
+    h.insert(header::RANGE, HeaderValue::from_str(&range).unwrap());
+    Ok((StatusCode::ACCEPTED, h).into_response())
+}
+
+pub async fn upload_finish(
+    storage: SharedStorage,
+    repo: &str,
+    uuid: &str,
+    digest_q: Option<String>,
+    body: Bytes,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let id = parse_uuid(uuid)?;
+    let digest_s = digest_q.ok_or_else(|| {
+        OciError::new(OciCode::DigestInvalid, "missing ?digest= on finalise")
+    })?;
+    let digest = parse_digest(&digest_s)?;
+    if !body.is_empty() {
+        match storage.upload_append(id, &body).await {
+            Ok(_) => {}
+            Err(StorageError::NotFound) => {
+                return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    match storage.upload_finalize(id, &digest).await {
+        Ok(()) => {}
+        Err(StorageError::NotFound) => {
+            return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
+        }
+        Err(StorageError::DigestMismatch { expected, got }) => {
+            return Err(OciError::new(
+                OciCode::DigestInvalid,
+                format!("digest mismatch: expected {expected}, got {got}"),
+            ))
+        }
+        Err(e) => return Err(e.into()),
+    }
+
+    let mut h = HeaderMap::new();
+    let loc = format!("/v2/{repo}/blobs/{digest}");
+    h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-content-digest"),
+        HeaderValue::from_str(&digest.to_string()).unwrap(),
+    );
+    Ok((StatusCode::CREATED, h).into_response())
+}
+
+pub async fn upload_cancel(
+    storage: SharedStorage,
+    repo: &str,
+    uuid: &str,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let id = parse_uuid(uuid)?;
+    match storage.upload_cancel(id).await {
+        Ok(()) => Ok((StatusCode::NO_CONTENT, HeaderMap::new()).into_response()),
+        Err(StorageError::NotFound) => {
+            Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Referrers (OCI v1.1)
+// ---------------------------------------------------------------------------
+
+pub async fn referrers(
+    storage: SharedStorage,
+    repo: &str,
+    digest_str: &str,
+    artifact_type_filter: Option<String>,
+) -> Result<Response, OciError> {
+    validate_repo_name(repo)?;
+    let subject = parse_digest(digest_str)?;
+
+    let mut matched = Vec::new();
+    let mut filtered = false;
+    for d in storage.list_manifest_digests(repo).await? {
+        let bytes = match storage
+            .manifest_get(repo, &Reference::Digest(d.clone()))
+            .await
+        {
+            Ok(b) => b,
+            Err(StorageError::NotFound) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let Ok(m) = parse_manifest_refs(&bytes) else {
+            continue;
+        };
+        let Some(sub) = m.subject.as_ref() else {
+            continue;
+        };
+        if sub.digest != subject {
+            continue;
+        }
+        if let Some(filter) = artifact_type_filter.as_deref() {
+            if m.artifact_type.as_deref() != Some(filter) {
+                filtered = true;
+                continue;
+            }
+        }
+
+        // Build the descriptor entry for the index.
+        let media = manifest_media_type(&bytes, None);
+        let mut entry = serde_json::Map::new();
+        entry.insert("mediaType".into(), json!(media));
+        entry.insert("digest".into(), json!(d.to_string()));
+        entry.insert("size".into(), json!(bytes.len()));
+        if let Some(at) = &m.artifact_type {
+            entry.insert("artifactType".into(), json!(at));
+        }
+        if let Some(annot) = &m.annotations {
+            entry.insert("annotations".into(), json!(annot));
+        }
+        matched.push(serde_json::Value::Object(entry));
+    }
+
+    let body = json!({
+        "schemaVersion": 2,
+        "mediaType": OCI_INDEX_MEDIA_TYPE,
+        "manifests": matched,
+    });
+
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(OCI_INDEX_MEDIA_TYPE),
+    );
+    if filtered {
+        h.insert(
+            HeaderName::from_static("oci-filters-applied"),
+            HeaderValue::from_static("artifactType"),
+        );
+    }
+    Ok((StatusCode::OK, h, axum::Json(body)).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// GC trigger (admin-only; not part of the OCI spec but useful)
+// ---------------------------------------------------------------------------
+
+pub async fn gc_run(storage: SharedStorage) -> Result<Response, OciError> {
+    let report = gc::run(&*storage).await?;
+    Ok(axum::Json(json!({
+        "repos_scanned": report.repos_scanned,
+        "manifests_scanned": report.manifests_scanned,
+        "reachable_blobs": report.reachable_blobs,
+        "deleted_blobs": report.deleted_blobs,
+        "deleted_bytes": report.deleted_bytes,
+    }))
+    .into_response())
+}
