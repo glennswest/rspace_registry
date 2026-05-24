@@ -16,6 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
+use rspace_registry_core::MultiStore;
+
 use crate::auth::{self, Htpasswd};
 use crate::error::{OciCode, OciError};
 use crate::handlers::{self, SharedStorage};
@@ -23,6 +25,9 @@ use crate::handlers::{self, SharedStorage};
 #[derive(Clone)]
 pub struct AppState {
     pub storage: SharedStorage,
+    /// When `storage` is a `MultiStore`, expose admin endpoints
+    /// (`/admin/partitions`, `/admin/replicate`) backed by it.
+    pub multi: Option<Arc<MultiStore>>,
     pub auth: Option<Arc<Htpasswd>>,
     pub realm: String,
     /// When set, exposes `POST /admin/gc` as an authenticated trigger.
@@ -33,10 +38,16 @@ impl AppState {
     pub fn new(storage: SharedStorage) -> Self {
         Self {
             storage,
+            multi: None,
             auth: None,
             realm: "rspace-registry".to_string(),
             admin_enabled: true,
         }
+    }
+
+    pub fn with_multi(mut self, multi: Arc<MultiStore>) -> Self {
+        self.multi = Some(multi);
+        self
     }
 }
 
@@ -112,8 +123,34 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
     // Strip /v2/ prefix; everything below this is `<repo>/<endpoint>...`.
     let Some(rest) = path.strip_prefix("/v2/") else {
         // ----- Admin (non-OCI) endpoints ----------------------------------
-        if state.admin_enabled && path == "/admin/gc" && method == Method::POST {
-            return into_response(handlers::gc_run(storage).await);
+        if state.admin_enabled {
+            if path == "/admin/gc" && method == Method::POST {
+                return into_response(handlers::gc_run(storage).await);
+            }
+            if let Some(multi) = state.multi.as_ref() {
+                if path == "/admin/partitions" && (method == Method::GET || method == Method::HEAD)
+                {
+                    return into_response(handlers::partitions_list(multi.clone()).await);
+                }
+                if path == "/admin/replicate" && method == Method::POST {
+                    let req: handlers::ReplicateRequest = if body.is_empty() {
+                        Default::default()
+                    } else {
+                        match serde_json::from_slice(&body) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return OciError::new(
+                                    OciCode::BlobUploadInvalid,
+                                    format!("bad replicate body: {e}"),
+                                )
+                                .with_status(StatusCode::BAD_REQUEST)
+                                .into_response();
+                            }
+                        }
+                    };
+                    return into_response(handlers::replicate_run(multi.clone(), req).await);
+                }
+            }
         }
         return not_found();
     };

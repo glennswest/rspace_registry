@@ -11,8 +11,8 @@ use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rspace_registry_core::{
-    gc, parse_manifest_refs, Digest, Reference, Storage, StorageError, MANIFEST_MEDIA_TYPES,
-    OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
+    gc, parse_manifest_refs, replicate, Digest, MultiStore, Reference, ReplicateConfig, Storage,
+    StorageError, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -627,6 +627,58 @@ pub async fn gc_run(storage: SharedStorage) -> Result<Response, OciError> {
         "reachable_blobs": report.reachable_blobs,
         "deleted_blobs": report.deleted_blobs,
         "deleted_bytes": report.deleted_bytes,
+    }))
+    .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Multi-partition admin (only meaningful when MultiStore is in use)
+// ---------------------------------------------------------------------------
+
+/// Snapshot of one partition. Counts are point-in-time and may differ
+/// between calls if the registry is taking writes concurrently.
+pub async fn partitions_list(
+    multi: Arc<MultiStore>,
+) -> Result<Response, OciError> {
+    let mut out = Vec::with_capacity(multi.partitions().len());
+    for (i, p) in multi.partitions().iter().enumerate() {
+        let blobs = p.storage.list_all_blobs().await?;
+        let repos = p.storage.list_repos().await?;
+        let mut manifest_count = 0usize;
+        for repo in &repos {
+            manifest_count += p.storage.list_manifest_digests(repo).await?.len();
+        }
+        let is_primary = std::ptr::eq(p, multi.primary());
+        let _ = i;
+        out.push(json!({
+            "name": p.name,
+            "primary": is_primary,
+            "blob_count": blobs.len(),
+            "manifest_count": manifest_count,
+            "repo_count": repos.len(),
+        }));
+    }
+    Ok(axum::Json(json!({ "partitions": out })).into_response())
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ReplicateRequest {
+    /// Optional shell-style glob — `"prod-*"`, `"v?.0"`, `"*"`.
+    pub tag_glob: Option<String>,
+}
+
+pub async fn replicate_run(
+    multi: Arc<MultiStore>,
+    body: ReplicateRequest,
+) -> Result<Response, OciError> {
+    let cfg = ReplicateConfig { tag_glob: body.tag_glob };
+    let report = replicate::run(&multi, &cfg).await?;
+    Ok(axum::Json(json!({
+        "partitions_scanned": report.partitions_scanned,
+        "blobs_copied": report.blobs_copied,
+        "bytes_copied": report.bytes_copied,
+        "manifests_copied": report.manifests_copied,
+        "duration_ms": report.duration_ms,
     }))
     .into_response())
 }

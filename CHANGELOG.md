@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### 2026-05-24
+- **feat (registry):** Admin endpoints `GET /admin/partitions` (per-partition blob/manifest/repo counts, primary flag) and `POST /admin/replicate` (optional `{"tag_glob": "prod-*"}`). Both refuse when MultiStore isn't wired in.
+- **feat (cli):** Repeatable `--partition name=/path`, `--primary <name>`, `--replicate-interval <0|60s|5m|1h>` (0 disables loop), `--replicate-tag-glob <pattern>`. New `replicate` subcommand for one-shot pass.
+- **feat (registry):** Background reconciler — when `--partition` lists more than one entry and interval > 0, the registry spawns a tokio task running `replicate::run` on a fixed cadence with structured-log on each pass.
+- **test (registry):** End-to-end multi-partition integration suite — writes land on primary only, `POST /admin/replicate` syncs blobs + manifests + tags to secondary, `GET /admin/partitions` reports matching counts, tag-glob filter narrows scope, HTTP GET falls through to secondary when primary is wiped, and `/admin/replicate` returns 404 when no MultiStore is configured.
 - **feat (core):** `MultiStore` adapter — composes N child `Storage` backends. Reads start at primary and fall through to secondaries on `NotFound`; writes (incl. uploads) target the primary only; deletes apply to every partition; listings union across all and dedupe. Primary is fixed at construction (no in-registry pivot — that's handled by another component).
 - **feat (core):** `replicate::run()` reconciler — copies tag-reachable manifests + their blobs from primary to each secondary; optional shell-style tag glob narrows scope. Idempotent. `replicate::spawn_loop()` runs the reconciler on a `tokio::time::interval` cadence.
 - **test (core):** Unit tests for MultiStore (write-to-primary-only, read fallthrough, prefer-primary, delete-from-all, list union, duplicate/unknown primary rejection) and the glob matcher.
