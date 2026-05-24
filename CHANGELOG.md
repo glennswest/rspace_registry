@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-05-23
+- **test (registry):** End-to-end OCI round-trip integration suite — chunked upload + monolithic POST + manifest PUT + GET-by-tag + GET-by-digest + tags-list + catalog + referrers (with and without `artifactType` filter) + GC + delete + GC-sweep. Plus error-shape tests (BLOB_UNKNOWN, NAME_INVALID) and cross-repo mount round-trip.
+- **docs:** Update project work plan with v0.2.0 multi-partition initiative scope.
 - **feat (registry):** Full OCI Distribution Spec v1.1 HTTP service — `/v2/`, `/v2/_catalog`, `/v2/<name>/tags/list`, `/v2/<name>/manifests/<ref>` (GET/HEAD/PUT/DELETE), `/v2/<name>/blobs/<digest>` (GET/HEAD/DELETE), full upload session lifecycle (`POST /uploads/`, `PATCH`, `PUT?digest=`, `GET`, `DELETE`) including monolithic POST and cross-repo mount, `/v2/<name>/referrers/<digest>` with `artifactType` filter and `OCI-Filters-Applied` header, and `POST /admin/gc` trigger.
 - **feat (registry):** Manual path-pattern router so multi-segment repo names (`tenant/team/repo`) work without losing axum's middleware ergonomics.
 - **feat (registry):** OCI error envelope (`{"errors":[{...}]}`) with standard codes (`BLOB_UNKNOWN`, `MANIFEST_INVALID`, `NAME_INVALID`, etc.) and `From<StorageError>` mapping.

@@ -138,8 +138,43 @@ After v0 lands (push/pull round-trip with FS backend + htpasswd + TLS), bump to 
 - Tag immutability + retention policies
 - Audit log to S3 or local journal
 
+### v0.2.0 — Multi-Partition Replicate-and-Pivot (next)
+
+Initiative captured 2026-05-23. Lets the registry drive multiple
+rspacefs partitions on one node: boot on A, replicate to B (all or
+tag-selected), pivot writes to B without restart. rspacefs already
+supports multiple stores via `additionalimagestores`, so this is
+mostly a registry-side feature:
+
+- `MultiStore` adapter implementing `Storage` over an ordered list of
+  child stores; reads from any, writes to designated primary.
+- Reconciler with configurable interval + tag glob (idempotent because
+  content-addressed).
+- Admin endpoints: `GET /admin/partitions`, `POST /admin/replicate`,
+  `POST /admin/pivot { target: "B" }`.
+- CLI: `--partition name=/path` (repeatable), `--primary <name>`,
+  `--replicate-interval <s>`, `--replicate-tag-glob <pattern>`.
+- Pivot semantics chosen: zero-downtime swap. Replication trigger:
+  periodic catch-up scan.
+
+Only write a rspacefs enhancement spec if a missing hook surfaces
+during implementation.
+
 ### Recently Completed
-- (project bootstrap pending)
+- 2026-05-23: Full OCI Distribution Spec v1.1 HTTP service — version
+  check, catalog, tags/list, manifest CRUD, blob CRUD, upload session
+  lifecycle (POST/PATCH/PUT/GET/DELETE) incl. monolithic POST + cross-
+  repo mount, referrers w/ artifactType filter. OCI error envelope.
+- 2026-05-23: htpasswd auth (bcrypt + plaintext) with
+  `WWW-Authenticate: Basic` challenge.
+- 2026-05-23: TLS termination via axum-server + rustls.
+- 2026-05-23: `rspace-registry gc` subcommand + `POST /admin/gc`
+  triggers mark-and-sweep across the data dir.
+- 2026-05-23: Manifest parser + GC engine (`gc::run` reports
+  manifests scanned, reachable blobs, deleted bytes).
+- 2026-05-23: Storage trait extended with upload sessions and
+  listing; FsStorage backend implements them with append-only upload
+  tmp files and same-fs rename to blob store.
 
 ## Test plan
 
