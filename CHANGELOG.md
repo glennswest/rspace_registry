@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
-<!-- New unreleased changes go here -->
+### 2026-05-24
+- **feat (core):** `MultiStore` adapter — composes N child `Storage` backends. Reads start at primary and fall through to secondaries on `NotFound`; writes (incl. uploads) target the primary only; deletes apply to every partition; listings union across all and dedupe. Primary is fixed at construction (no in-registry pivot — that's handled by another component).
+- **feat (core):** `replicate::run()` reconciler — copies tag-reachable manifests + their blobs from primary to each secondary; optional shell-style tag glob narrows scope. Idempotent. `replicate::spawn_loop()` runs the reconciler on a `tokio::time::interval` cadence.
+- **test (core):** Unit tests for MultiStore (write-to-primary-only, read fallthrough, prefer-primary, delete-from-all, list union, duplicate/unknown primary rejection) and the glob matcher.
 
 ## [v0.1.0] — 2026-05-23
 
