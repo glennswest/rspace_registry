@@ -2,25 +2,42 @@
 
 ## [Unreleased]
 
-### 2026-05-23
-- **test (registry):** End-to-end OCI round-trip integration suite — chunked upload + monolithic POST + manifest PUT + GET-by-tag + GET-by-digest + tags-list + catalog + referrers (with and without `artifactType` filter) + GC + delete + GC-sweep. Plus error-shape tests (BLOB_UNKNOWN, NAME_INVALID) and cross-repo mount round-trip.
-- **docs:** Update project work plan with v0.2.0 multi-partition initiative scope.
-- **feat (registry):** Full OCI Distribution Spec v1.1 HTTP service — `/v2/`, `/v2/_catalog`, `/v2/<name>/tags/list`, `/v2/<name>/manifests/<ref>` (GET/HEAD/PUT/DELETE), `/v2/<name>/blobs/<digest>` (GET/HEAD/DELETE), full upload session lifecycle (`POST /uploads/`, `PATCH`, `PUT?digest=`, `GET`, `DELETE`) including monolithic POST and cross-repo mount, `/v2/<name>/referrers/<digest>` with `artifactType` filter and `OCI-Filters-Applied` header, and `POST /admin/gc` trigger.
-- **feat (registry):** Manual path-pattern router so multi-segment repo names (`tenant/team/repo`) work without losing axum's middleware ergonomics.
-- **feat (registry):** OCI error envelope (`{"errors":[{...}]}`) with standard codes (`BLOB_UNKNOWN`, `MANIFEST_INVALID`, `NAME_INVALID`, etc.) and `From<StorageError>` mapping.
-- **feat (registry):** htpasswd auth middleware (bcrypt + plaintext) and `WWW-Authenticate: Basic` challenge on 401.
-- **feat (registry):** TLS termination via axum-server + rustls (`--cert`/`--key`).
-- **feat (registry):** `rspace-registry gc` subcommand runs mark-and-sweep over the data dir.
-- **feat (core):** Extend `Storage` trait with chunked upload sessions (`upload_create`/`append`/`status`/`finalize`/`cancel`), listing methods (`list_repos`, `list_tags`, `list_manifest_digests`, `list_all_blobs`), and `UploadStatus` type.
-- **feat (core):** OCI `Manifest` / `Descriptor` parsing module with media-type constants and `referenced_digests()` walker for image manifests and indexes.
-- **feat (core):** Mark-and-sweep `gc::run()` engine with `GcReport` (manifests scanned, reachable blobs, deleted bytes).
-- **feat (fs):** Implement upload sessions backed by `uploads/<uuid>` append-only files; finalise via same-fs rename with copy-fallback.
-- **feat (fs):** Implement repo/tag/blob enumeration with recursive `manifests/` walk to support slash-separated repo names.
-- **chore (core):** Derive `Ord` on `Digest` and `Algorithm` so reachable-set sweeps via `BTreeSet`.
+<!-- New unreleased changes go here -->
 
-### 2026-05-21
-- **chore:** Initial project skeleton — Cargo workspace, three crates (binary `rspace-registry`, library `rspace-registry-core`, FS storage `rspace-registry-fs`).
-- **feat (core):** OCI `Digest` type with sha256 + sha512 parsing, round-trip tests, rejection of malformed input.
-- **feat (core):** `Storage` trait — minimal blob + manifest surface sufficient for OCI Distribution Spec v1.1.
-- **feat (fs):** Filesystem-backed `Storage` impl with content-addressed blob layout and tag-pointer-to-digest manifest scheme. Atomic writes via tmp+rename. Unit tests for round-trip and digest-mismatch rejection.
-- **docs:** README + CLAUDE.md with work plan, OCI endpoint conformance table, and cross-references to the sibling `rspacefs` repo.
+## [v0.1.0] — 2026-05-23
+
+First usable cut. OCI Distribution Spec v1.1 push/pull round-trip works
+end-to-end against the filesystem `Storage` backend, with optional
+htpasswd auth, optional TLS, mark-and-sweep GC, and the referrers API.
+
+### Added
+
+- **HTTP service (registry binary)** — full OCI Distribution Spec v1.1 surface:
+  - `GET /v2/` version check.
+  - `GET /v2/_catalog` with `n` / `last` pagination.
+  - `GET /v2/<name>/tags/list` with `n` / `last` pagination.
+  - `GET` / `HEAD` / `PUT` / `DELETE /v2/<name>/manifests/<ref>` (tag or digest).
+  - `GET` / `HEAD` / `DELETE /v2/<name>/blobs/<digest>`.
+  - Upload sessions: `POST /v2/<name>/blobs/uploads/` (incl. monolithic `?digest=` and cross-repo `?mount=&from=`), `PATCH`, `PUT?digest=`, `GET`, `DELETE`.
+  - `GET /v2/<name>/referrers/<digest>` with `artifactType` filter and `OCI-Filters-Applied` header.
+  - `POST /admin/gc` admin trigger.
+- **Manual path-pattern router** so multi-segment repo names (`tenant/team/repo`) work without losing axum middleware ergonomics.
+- **OCI error envelope** (`{"errors":[{"code":..., "message":..., "detail":...}]}`) with standard codes and `From<StorageError>` mapping.
+- **htpasswd auth** (bcrypt + plaintext) with `WWW-Authenticate: Basic` challenge on 401.
+- **TLS termination** via `axum-server` + `rustls` (`--cert` / `--key`).
+- **`rspace-registry gc` subcommand** for one-shot mark-and-sweep across the data dir.
+- **Storage trait** (`rspace-registry-core`): blob + manifest + upload-session + listing + GC surface.
+- **`gc::run()`** mark-and-sweep engine with `GcReport` (manifests scanned, reachable blobs, deleted bytes).
+- **OCI `Manifest` / `Descriptor` parser** with media-type constants and `referenced_digests()`.
+- **`FsStorage`** backend implementing the full trait — content-addressed blobs, tag-pointer manifests, upload sessions as append-only files under `uploads/<uuid>`, repo enumeration via recursive walk.
+- **End-to-end integration test suite** covering push/pull round-trip, error shapes, referrers (with and without `artifactType` filter), cross-repo mount, and GC reaping.
+
+### Project
+
+- **Workspace skeleton** — three crates (binary `rspace-registry`, library `rspace-registry-core`, FS storage `rspace-registry-fs`), pinned to Rust 1.75+.
+- **README + CLAUDE.md** with work plan, OCI endpoint conformance table, and cross-reference to sibling [`rspacefs`](https://github.com/glennswest/rspacefs).
+
+### Notes
+
+- The `rspacefs`-shared storage backend (zero-copy with `containers-storage`) is deferred to v0.2.x.
+- Multi-partition + replicate-and-pivot support is captured for v0.2.0 (see CLAUDE.md work plan).

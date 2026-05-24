@@ -8,7 +8,15 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
-Pre-implementation. Project skeleton + integration plan only. See [CLAUDE.md](./CLAUDE.md) for the work plan.
+**v0.1.0 — first usable cut.** OCI Distribution Spec v1.1 push/pull
+round-trip works end-to-end against the filesystem `Storage` backend,
+with optional htpasswd auth, optional TLS, mark-and-sweep GC, and the
+referrers API. Integration tests cover every endpoint.
+
+Next up (v0.2.0): multi-partition support with replicate-and-pivot —
+boot on one rspacefs partition, replicate to a destination drive,
+swap writes to the new partition live without restarting CRI-O. See
+[CLAUDE.md](./CLAUDE.md) for the full work plan.
 
 ## Why a new registry
 

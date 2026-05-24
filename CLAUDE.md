@@ -108,7 +108,11 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.0.0` (pre-implementation)
+### Current Version: `v0.1.0` — first usable cut
+
+OCI Distribution Spec v1.1 push/pull round-trip works against
+`FsStorage` backend, with htpasswd auth + optional TLS, mark-and-sweep
+GC, and referrers API. End-to-end integration test suite passes.
 
 ### TODO (priority order)
 
