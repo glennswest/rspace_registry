@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "rspace-registry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "rspace-registry-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1124,12 +1124,13 @@ dependencies = [
 
 [[package]]
 name = "rspace-registry-fs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hex",
  "rspace-registry-core",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

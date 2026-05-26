@@ -518,15 +518,12 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "rspace-registry-fs-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
+        // Leak the TempDir so its drop-cleanup doesn't race with the
+        // test using it. Each call gets a fresh, collision-free path
+        // via mkstemp.
+        let td = tempfile::tempdir().expect("tempdir");
+        let p = td.path().to_path_buf();
+        std::mem::forget(td);
         p
     }
 }
