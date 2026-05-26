@@ -8,15 +8,20 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
-**v0.1.0 — first usable cut.** OCI Distribution Spec v1.1 push/pull
-round-trip works end-to-end against the filesystem `Storage` backend,
-with optional htpasswd auth, optional TLS, mark-and-sweep GC, and the
-referrers API. Integration tests cover every endpoint.
+**v0.2.0 — multi-partition + replication.** v0.1.0 surface (full OCI
+Distribution Spec v1.1 push/pull, htpasswd auth, TLS, mark-and-sweep
+GC, referrers) plus:
 
-Next up (v0.2.0): multi-partition support with replicate-and-pivot —
-boot on one rspacefs partition, replicate to a destination drive,
-swap writes to the new partition live without restarting CRI-O. See
-[CLAUDE.md](./CLAUDE.md) for the full work plan.
+- `MultiStore` composes N partitions; reads fall through, writes go to
+  a fixed primary, deletes apply to all.
+- Background reconciler periodically copies primary → secondaries.
+  Optional shell-style tag glob (`--replicate-tag-glob 'prod-*'`).
+- `GET /admin/partitions`, `POST /admin/replicate` admin endpoints.
+- CLI: `--partition name=/path` (repeatable), `--primary <name>`,
+  `--replicate-interval <0|60s|5m|1h>`, `--replicate-tag-glob`.
+
+Active-partition pivot is handled by another component outside the
+registry. See [CLAUDE.md](./CLAUDE.md) for the full work plan.
 
 ## Why a new registry
 

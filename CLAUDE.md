@@ -108,11 +108,15 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.1.0` — first usable cut
+### Current Version: `v0.2.0` — multi-partition + replication
 
-OCI Distribution Spec v1.1 push/pull round-trip works against
-`FsStorage` backend, with htpasswd auth + optional TLS, mark-and-sweep
-GC, and referrers API. End-to-end integration test suite passes.
+v0.1.0 surface still intact. Adds `MultiStore` adapter (Storage trait
+composed over N partitions; reads fall through, writes go to a fixed
+primary, deletes apply to all), `replicate::run` reconciler with
+optional shell-style tag glob, admin endpoints (`GET /admin/partitions`
+and `POST /admin/replicate`), and a background reconciler task spawned
+when more than one partition is declared. Active-partition pivot is
+handled by another component outside the registry.
 
 ### TODO (priority order)
 
