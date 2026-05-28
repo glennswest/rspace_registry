@@ -1113,6 +1113,7 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2",

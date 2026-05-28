@@ -9,6 +9,7 @@ description = "OCI types, Storage trait, GC engine — shared library for rspace
 
 [dependencies]
 async-trait.workspace = true
+parking_lot = "0.12"
 bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
