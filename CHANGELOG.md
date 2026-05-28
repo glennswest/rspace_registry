@@ -2,7 +2,10 @@
 
 ## [Unreleased]
 
-<!-- New unreleased changes go here -->
+### 2026-05-27
+- **ci:** Gate every `ci.yml` job with `if: github.server_url != 'https://github.com'` so GitHub Actions records the workflow_run but skips all jobs (zero minutes) — CI runs on forcicd.g8.lo (Forgejo + act_runner). Pin `Swatinem/rust-cache@v2.7.3` for forcicd's node20 runner. Add `build-linux` job (x86_64 + aarch64 cross-compile of `rspace-registry`); disable the macOS job (no forcicd Mac runner).
+- **ci:** Add `release.yml` — forcicd builds x86_64 + aarch64 tarballs on `v*` tags and publishes them to the canonical github.com release via `softprops/action-gh-release@v2.0.8` using the `GH_PAT` secret; alpha-by-default release type with `workflow_dispatch` promotion.
+- **chore:** `cargo fmt` pass; fix clippy lints (`ReplicateConfig` derivable `Default`, `sort_by_key` over `sort_by`).
 
 ## [v0.2.0] — 2026-05-24
 

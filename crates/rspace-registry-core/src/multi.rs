@@ -34,7 +34,9 @@ pub struct Partition {
 
 impl std::fmt::Debug for Partition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Partition").field("name", &self.name).finish()
+        f.debug_struct("Partition")
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -49,7 +51,9 @@ impl MultiStore {
     /// in `partitions`.
     pub fn new(partitions: Vec<Partition>, primary: &str) -> Result<Self, StorageError> {
         if partitions.is_empty() {
-            return Err(StorageError::Invalid("MultiStore needs at least one partition".into()));
+            return Err(StorageError::Invalid(
+                "MultiStore needs at least one partition".into(),
+            ));
         }
         let mut seen = std::collections::HashSet::new();
         for p in &partitions {
@@ -221,14 +225,13 @@ impl Storage for MultiStore {
         reference: &Reference,
         content: &[u8],
     ) -> Result<Digest, StorageError> {
-        self.primary().storage.manifest_put(repo, reference, content).await
+        self.primary()
+            .storage
+            .manifest_put(repo, reference, content)
+            .await
     }
 
-    async fn manifest_delete(
-        &self,
-        repo: &str,
-        reference: &Reference,
-    ) -> Result<(), StorageError> {
+    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError> {
         let mut deleted_any = false;
         let mut last_err: Option<StorageError> = None;
         for p in &self.partitions {
@@ -302,8 +305,7 @@ mod tests {
     struct MemStore {
         blobs: tokio::sync::Mutex<std::collections::HashMap<Digest, Vec<u8>>>,
         tags: tokio::sync::Mutex<std::collections::HashMap<(String, String), Digest>>,
-        manifest_bytes:
-            tokio::sync::Mutex<std::collections::HashMap<(String, Digest), Vec<u8>>>,
+        manifest_bytes: tokio::sync::Mutex<std::collections::HashMap<(String, Digest), Vec<u8>>>,
     }
 
     #[async_trait]
@@ -320,10 +322,18 @@ mod tests {
                 .ok_or(StorageError::NotFound)
         }
         async fn blob_read(&self, d: &Digest) -> Result<Vec<u8>, StorageError> {
-            self.blobs.lock().await.get(d).cloned().ok_or(StorageError::NotFound)
+            self.blobs
+                .lock()
+                .await
+                .get(d)
+                .cloned()
+                .ok_or(StorageError::NotFound)
         }
         async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError> {
-            self.blobs.lock().await.insert(expected.clone(), content.to_vec());
+            self.blobs
+                .lock()
+                .await
+                .insert(expected.clone(), content.to_vec());
             Ok(())
         }
         async fn blob_delete(&self, d: &Digest) -> Result<(), StorageError> {
@@ -335,13 +345,23 @@ mod tests {
                 .ok_or(StorageError::NotFound)
         }
         async fn upload_create(&self) -> Result<UploadStatus, StorageError> {
-            Ok(UploadStatus { id: Uuid::new_v4(), offset: 0 })
+            Ok(UploadStatus {
+                id: Uuid::new_v4(),
+                offset: 0,
+            })
         }
         async fn upload_status(&self, id: Uuid) -> Result<UploadStatus, StorageError> {
             Ok(UploadStatus { id, offset: 0 })
         }
-        async fn upload_append(&self, id: Uuid, chunk: &[u8]) -> Result<UploadStatus, StorageError> {
-            Ok(UploadStatus { id, offset: chunk.len() as u64 })
+        async fn upload_append(
+            &self,
+            id: Uuid,
+            chunk: &[u8],
+        ) -> Result<UploadStatus, StorageError> {
+            Ok(UploadStatus {
+                id,
+                offset: chunk.len() as u64,
+            })
         }
         async fn upload_finalize(&self, _id: Uuid, _expected: &Digest) -> Result<(), StorageError> {
             Ok(())
@@ -466,8 +486,14 @@ mod tests {
         let b = Arc::new(MemStore::default());
         let multi = MultiStore::new(
             vec![
-                Partition { name: "a".into(), storage: a.clone() as Arc<dyn Storage> },
-                Partition { name: "b".into(), storage: b.clone() as Arc<dyn Storage> },
+                Partition {
+                    name: "a".into(),
+                    storage: a.clone() as Arc<dyn Storage>,
+                },
+                Partition {
+                    name: "b".into(),
+                    storage: b.clone() as Arc<dyn Storage>,
+                },
             ],
             "a",
         )
@@ -540,8 +566,14 @@ mod tests {
         let s = Arc::new(MemStore::default()) as Arc<dyn Storage>;
         let r = MultiStore::new(
             vec![
-                Partition { name: "a".into(), storage: s.clone() },
-                Partition { name: "a".into(), storage: s.clone() },
+                Partition {
+                    name: "a".into(),
+                    storage: s.clone(),
+                },
+                Partition {
+                    name: "a".into(),
+                    storage: s.clone(),
+                },
             ],
             "a",
         );
@@ -552,7 +584,10 @@ mod tests {
     fn rejects_unknown_primary() {
         let s = Arc::new(MemStore::default()) as Arc<dyn Storage>;
         let r = MultiStore::new(
-            vec![Partition { name: "a".into(), storage: s }],
+            vec![Partition {
+                name: "a".into(),
+                storage: s,
+            }],
             "missing",
         );
         assert!(matches!(r, Err(StorageError::Invalid(_))));

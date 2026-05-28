@@ -93,7 +93,10 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             FsStorage::new(&cli.data)
                 .with_context(|| format!("opening data dir {}", cli.data.display()))?,
         ) as Arc<dyn Storage>;
-        return Ok(StorageSetup { storage: s, multi: None });
+        return Ok(StorageSetup {
+            storage: s,
+            multi: None,
+        });
     }
 
     let mut parsed = Vec::with_capacity(cli.partitions.len());
@@ -105,10 +108,12 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             return Err(anyhow!("--partition {raw:?} has empty name"));
         }
         let storage = Arc::new(
-            FsStorage::new(path)
-                .with_context(|| format!("opening partition {name}={path}"))?,
+            FsStorage::new(path).with_context(|| format!("opening partition {name}={path}"))?,
         ) as Arc<dyn Storage>;
-        parsed.push(Partition { name: name.to_string(), storage });
+        parsed.push(Partition {
+            name: name.to_string(),
+            storage,
+        });
     }
 
     let primary = match (&cli.primary, parsed.len()) {
@@ -266,7 +271,11 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
                 .await
                 .with_context(|| {
-                    format!("loading TLS from cert={} key={}", cert.display(), key.display())
+                    format!(
+                        "loading TLS from cert={} key={}",
+                        cert.display(),
+                        key.display()
+                    )
                 })?;
             axum_server::bind_rustls(addr, tls)
                 .serve(app.into_make_service())
@@ -275,7 +284,9 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
         }
         (None, None) => {
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            axum::serve(listener, app).await.map_err(anyhow::Error::from)
+            axum::serve(listener, app)
+                .await
+                .map_err(anyhow::Error::from)
         }
         _ => Err(anyhow!("--cert and --key must be provided together")),
     };

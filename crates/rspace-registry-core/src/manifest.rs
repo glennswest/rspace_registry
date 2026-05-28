@@ -32,7 +32,11 @@ pub struct Descriptor {
     pub digest: Digest,
     #[serde(default)]
     pub size: u64,
-    #[serde(rename = "artifactType", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "artifactType",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub artifact_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Map<String, serde_json::Value>>,

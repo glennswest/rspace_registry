@@ -29,8 +29,8 @@ pub struct Htpasswd {
 
 impl Htpasswd {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut users = HashMap::new();
         let mut plain_warned = false;
         for (i, line) in text.lines().enumerate() {
@@ -42,24 +42,25 @@ impl Htpasswd {
                 tracing::warn!(line = i + 1, "htpasswd: skipping line without ':'");
                 continue;
             };
-            let h = if hash.starts_with("$2y$")
-                || hash.starts_with("$2a$")
-                || hash.starts_with("$2b$")
-            {
-                Hash::Bcrypt(hash.to_string())
-            } else if hash.starts_with('$') || hash.starts_with('{') {
-                tracing::warn!(
-                    user = user,
-                    "htpasswd: skipping user with unsupported hash scheme — use bcrypt"
-                );
-                continue;
-            } else {
-                if !plain_warned {
-                    tracing::warn!("htpasswd: plaintext entries detected — use bcrypt in production");
-                    plain_warned = true;
-                }
-                Hash::Plain(hash.to_string())
-            };
+            let h =
+                if hash.starts_with("$2y$") || hash.starts_with("$2a$") || hash.starts_with("$2b$")
+                {
+                    Hash::Bcrypt(hash.to_string())
+                } else if hash.starts_with('$') || hash.starts_with('{') {
+                    tracing::warn!(
+                        user = user,
+                        "htpasswd: skipping user with unsupported hash scheme — use bcrypt"
+                    );
+                    continue;
+                } else {
+                    if !plain_warned {
+                        tracing::warn!(
+                            "htpasswd: plaintext entries detected — use bcrypt in production"
+                        );
+                        plain_warned = true;
+                    }
+                    Hash::Plain(hash.to_string())
+                };
             users.insert(user.to_string(), h);
         }
         if users.is_empty() {
@@ -71,7 +72,8 @@ impl Htpasswd {
     /// Insert a plaintext entry; for tests only.
     #[doc(hidden)]
     pub fn insert_plain(&mut self, user: &str, pw: &str) {
-        self.users.insert(user.to_string(), Hash::Plain(pw.to_string()));
+        self.users
+            .insert(user.to_string(), Hash::Plain(pw.to_string()));
     }
 
     pub fn verify(&self, user: &str, password: &str) -> bool {
@@ -99,7 +101,9 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 /// Decode an `Authorization: Basic ...` header into `(user, password)`.
 pub fn parse_basic(headers: &HeaderMap) -> Option<(String, String)> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let token = raw.strip_prefix("Basic ").or_else(|| raw.strip_prefix("basic "))?;
+    let token = raw
+        .strip_prefix("Basic ")
+        .or_else(|| raw.strip_prefix("basic "))?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(token.trim())
         .ok()?;

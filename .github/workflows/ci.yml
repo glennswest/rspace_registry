@@ -1,5 +1,19 @@
 name: ci
 
+# CI runs on forcicd.g8.lo (Forgejo + act_runner) — not on GitHub Actions.
+# We're conserving GitHub Actions bandwidth; forcicd is canonical for the
+# CI loop. Every job below carries an `if: github.server_url !=
+# 'https://github.com'` gate so the GitHub side records the workflow_run
+# but skips every job (zero minutes consumed). The Forgejo mirror at
+# http://forcicd.g8.lo:3000/ci/rspace_registry runs everything normally.
+#
+# If you ever NEED GitHub-side CI (security audit, public PR verification,
+# external contributor without LAN access), remove the gates or override
+# via workflow_dispatch from the GitHub UI.
+#
+# Action-version pins: forcicd's act_runner v7 caps at node20, so floating
+# tags that target node24 break. Keep Swatinem/rust-cache at v2.7.3.
+
 on:
   push:
     branches: [main]
@@ -16,6 +30,7 @@ env:
 jobs:
   fmt:
     name: fmt
+    if: github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,24 +41,71 @@ jobs:
 
   clippy:
     name: clippy
+    if: github.server_url != 'https://github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.7.3
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  test-linux:
+    name: test (ubuntu-latest)
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.7.3
       - run: cargo test --workspace --all-targets
+
+  # The registry is pure axum + fs — no platform stub — so the suite is
+  # Linux-validated above and locally on the developer's macOS. forcicd
+  # has no Mac runner image and we've moved CI off GH, so this is
+  # disabled. Re-enable by removing `false &&` for a macOS verification
+  # run via GH workflow_dispatch.
+  test-macos:
+    name: test (macos-latest)
+    if: false && github.server_url == 'https://github.com'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.7.3
+      - run: cargo test --workspace --all-targets
+
+  build-linux:
+    name: build linux release (${{ matrix.arch }})
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2.7.3
+      - name: install cross linker for aarch64
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+      - name: build rspace-registry
+        run: |
+          cargo build --release \
+            --target ${{ matrix.arch }}-unknown-linux-gnu \
+            -p rspace-registry
+          ls -la target/${{ matrix.arch }}-unknown-linux-gnu/release/rspace-registry
+      # Artifacts surface in forcicd's job-page log (no separate upload
+      # step — actions/upload-artifact@v4 rejects Forgejo). Release tags
+      # publish tarballs to GitHub Releases via release.yml.

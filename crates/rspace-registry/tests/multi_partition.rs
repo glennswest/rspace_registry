@@ -33,8 +33,14 @@ fn harness() -> Harness {
     let multi = Arc::new(
         MultiStore::new(
             vec![
-                Partition { name: "a".into(), storage: a as Arc<dyn Storage> },
-                Partition { name: "b".into(), storage: b as Arc<dyn Storage> },
+                Partition {
+                    name: "a".into(),
+                    storage: a as Arc<dyn Storage>,
+                },
+                Partition {
+                    name: "b".into(),
+                    storage: b as Arc<dyn Storage>,
+                },
             ],
             "a",
         )
@@ -133,7 +139,10 @@ async fn write_lands_on_primary_only() {
     let a = &h.multi.partitions()[0].storage;
     let b = &h.multi.partitions()[1].storage;
     assert_eq!(a.list_repos().await.unwrap(), vec!["app/one"]);
-    assert!(b.list_repos().await.unwrap().is_empty(), "secondary untouched");
+    assert!(
+        b.list_repos().await.unwrap().is_empty(),
+        "secondary untouched"
+    );
 }
 
 #[tokio::test]
@@ -143,9 +152,14 @@ async fn replicate_all_then_partitions_report_matching_counts() {
     let _ = push_image(&h.app, "app/two", "v2", b"layer-bytes-2-larger").await;
 
     // Trigger replication.
-    let (status, _h, body) =
-        send(&h.app, Method::POST, "/admin/replicate", Some(b"{}".to_vec()), Some("application/json"))
-            .await;
+    let (status, _h, body) = send(
+        &h.app,
+        Method::POST,
+        "/admin/replicate",
+        Some(b"{}".to_vec()),
+        Some("application/json"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let report: Value = serde_json::from_slice(&body).unwrap();
     // Each push emits two distinct blobs (layer differs by content,
@@ -169,9 +183,14 @@ async fn replicate_all_then_partitions_report_matching_counts() {
     assert_eq!(a["manifest_count"], b["manifest_count"]);
 
     // A second replicate pass should be a no-op (idempotent).
-    let (_s, _h, body) =
-        send(&h.app, Method::POST, "/admin/replicate", Some(b"{}".to_vec()), Some("application/json"))
-            .await;
+    let (_s, _h, body) = send(
+        &h.app,
+        Method::POST,
+        "/admin/replicate",
+        Some(b"{}".to_vec()),
+        Some("application/json"),
+    )
+    .await;
     let report: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(report["blobs_copied"], 0, "second pass should copy nothing");
     assert_eq!(report["manifests_copied"], 0);
@@ -213,9 +232,14 @@ async fn read_falls_through_to_secondary_via_http() {
     let _ = push_image(&h.app, "app/y", "v1", layer).await;
 
     // Replicate to B.
-    let (_s, _h, _) =
-        send(&h.app, Method::POST, "/admin/replicate", Some(b"{}".to_vec()), Some("application/json"))
-            .await;
+    let (_s, _h, _) = send(
+        &h.app,
+        Method::POST,
+        "/admin/replicate",
+        Some(b"{}".to_vec()),
+        Some("application/json"),
+    )
+    .await;
 
     // Wipe A's blob store by deleting the only blob via the HTTP API,
     // which goes to A first (and B since blob_delete is multi-fan-out

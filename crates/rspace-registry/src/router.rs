@@ -59,19 +59,13 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn require_auth(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn require_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let Some(htpasswd) = state.auth.as_ref() else {
         return next.run(req).await;
     };
     // Always allow GET /v2/ (the version check is unauthenticated by spec —
     // some clients use it to probe what auth method to use, then retry).
-    if req.method() == Method::GET
-        && (req.uri().path() == "/v2/" || req.uri().path() == "/v2")
-    {
+    if req.method() == Method::GET && (req.uri().path() == "/v2/" || req.uri().path() == "/v2") {
         return next.run(req).await;
     }
     match auth::parse_basic(req.headers()) {
@@ -188,7 +182,9 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                 let digest = query.get("digest").cloned();
                 let mount = query.get("mount").cloned();
                 let from = query.get("from").cloned();
-                into_response(handlers::upload_start(storage, repo, digest, mount, from, body).await)
+                into_response(
+                    handlers::upload_start(storage, repo, digest, mount, from, body).await,
+                )
             }
             _ => method_not_allowed(),
         };
@@ -208,8 +204,12 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
 
     if let Some((repo, reference)) = strip_two_suffix(rest, "/manifests/") {
         return match method {
-            Method::GET => into_response(handlers::manifest_get(storage, repo, reference, false).await),
-            Method::HEAD => into_response(handlers::manifest_get(storage, repo, reference, true).await),
+            Method::GET => {
+                into_response(handlers::manifest_get(storage, repo, reference, false).await)
+            }
+            Method::HEAD => {
+                into_response(handlers::manifest_get(storage, repo, reference, true).await)
+            }
             Method::PUT => {
                 let ct = headers
                     .get(axum::http::header::CONTENT_TYPE)
@@ -217,7 +217,9 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                     .map(|s| s.to_string());
                 into_response(handlers::manifest_put(storage, repo, reference, ct, body).await)
             }
-            Method::DELETE => into_response(handlers::manifest_delete(storage, repo, reference).await),
+            Method::DELETE => {
+                into_response(handlers::manifest_delete(storage, repo, reference).await)
+            }
             _ => method_not_allowed(),
         };
     }

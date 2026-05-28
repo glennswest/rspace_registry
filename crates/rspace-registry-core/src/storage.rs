@@ -92,8 +92,7 @@ pub trait Storage: Send + Sync {
         reference: &Reference,
         content: &[u8],
     ) -> Result<Digest, StorageError>;
-    async fn manifest_delete(&self, repo: &str, reference: &Reference)
-        -> Result<(), StorageError>;
+    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError>;
 
     // ---- Listing / GC ---------------------------------------------------
 

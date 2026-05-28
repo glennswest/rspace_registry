@@ -28,17 +28,11 @@ pub struct ReplicateReport {
     pub duration_ms: u128,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReplicateConfig {
     /// Optional shell-style glob restricting which tag names get
     /// replicated (e.g. `"prod-*"`). `None` ⇒ replicate everything.
     pub tag_glob: Option<String>,
-}
-
-impl Default for ReplicateConfig {
-    fn default() -> Self {
-        Self { tag_glob: None }
-    }
 }
 
 /// Run a single reconciliation pass over a [`MultiStore`].

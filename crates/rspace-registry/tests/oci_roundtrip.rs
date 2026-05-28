@@ -75,7 +75,8 @@ async fn full_push_pull_roundtrip() {
     let repo = "library/alpine";
     let layer = b"layer-data-hello-world";
     let layer_digest = format!("sha256:{}", sha256_hex(layer));
-    let config = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
+    let config =
+        br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
     let config_digest = format!("sha256:{}", sha256_hex(config));
 
     // --- Upload the layer in chunks. ----------------------------------------
@@ -88,7 +89,12 @@ async fn full_push_pull_roundtrip() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let location = headers.get("location").unwrap().to_str().unwrap().to_string();
+    let location = headers
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
 
     // PATCH the first half.
     let mid = layer.len() / 2;
@@ -135,8 +141,14 @@ async fn full_push_pull_roundtrip() {
 
     // --- HEAD both blobs. ---------------------------------------------------
     for d in [&layer_digest, &config_digest] {
-        let (status, headers, _) =
-            send(&app, Method::HEAD, &format!("/v2/{repo}/blobs/{d}"), None, None).await;
+        let (status, headers, _) = send(
+            &app,
+            Method::HEAD,
+            &format!("/v2/{repo}/blobs/{d}"),
+            None,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "HEAD blob {d}");
         assert!(headers.contains_key("docker-content-digest"));
     }
@@ -293,7 +305,9 @@ async fn full_push_pull_roundtrip() {
     let (status, headers, body) = send(
         &app,
         Method::GET,
-        &format!("/v2/{repo}/referrers/{manifest_digest}?artifactType=application/vnd.nope.v1%2Bjson"),
+        &format!(
+            "/v2/{repo}/referrers/{manifest_digest}?artifactType=application/vnd.nope.v1%2Bjson"
+        ),
         None,
         None,
     )
@@ -302,7 +316,11 @@ async fn full_push_pull_roundtrip() {
     let parsed: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["manifests"].as_array().unwrap().len(), 0);
     assert_eq!(
-        headers.get("oci-filters-applied").unwrap().to_str().unwrap(),
+        headers
+            .get("oci-filters-applied")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "artifactType"
     );
 
@@ -367,14 +385,7 @@ async fn missing_blob_returns_404_oci_error() {
 #[tokio::test]
 async fn rejects_bad_repo_name() {
     let (app, _tmp) = router();
-    let (status, _h, body) = send(
-        &app,
-        Method::GET,
-        "/v2/UPPERCASE/tags/list",
-        None,
-        None,
-    )
-    .await;
+    let (status, _h, body) = send(&app, Method::GET, "/v2/UPPERCASE/tags/list", None, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let parsed: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["errors"][0]["code"], "NAME_INVALID");

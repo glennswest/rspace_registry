@@ -55,7 +55,11 @@ impl FsStorage {
     }
 
     fn manifest_tag_path(&self, repo: &str, tag: &str) -> PathBuf {
-        self.root.join("manifests").join(repo).join("tags").join(tag)
+        self.root
+            .join("manifests")
+            .join(repo)
+            .join("tags")
+            .join(tag)
     }
 
     fn manifest_digest_path(&self, repo: &str, d: &Digest) -> PathBuf {
@@ -126,7 +130,9 @@ impl Storage for FsStorage {
     }
 
     async fn blob_read(&self, digest: &Digest) -> Result<Vec<u8>, StorageError> {
-        fs::read(self.blob_path(digest)).await.map_err(io_to_storage)
+        fs::read(self.blob_path(digest))
+            .await
+            .map_err(io_to_storage)
     }
 
     async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError> {
@@ -163,7 +169,10 @@ impl Storage for FsStorage {
         let m = fs::metadata(self.upload_path(id))
             .await
             .map_err(io_to_storage)?;
-        Ok(UploadStatus { id, offset: m.len() })
+        Ok(UploadStatus {
+            id,
+            offset: m.len(),
+        })
     }
 
     async fn upload_append(&self, id: Uuid, chunk: &[u8]) -> Result<UploadStatus, StorageError> {
@@ -249,11 +258,7 @@ impl Storage for FsStorage {
         Ok(digest)
     }
 
-    async fn manifest_delete(
-        &self,
-        repo: &str,
-        reference: &Reference,
-    ) -> Result<(), StorageError> {
+    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError> {
         let path = match reference {
             Reference::Digest(d) => self.manifest_digest_path(repo, d),
             Reference::Tag(t) => self.manifest_tag_path(repo, t),
@@ -318,7 +323,7 @@ impl Storage for FsStorage {
                 out.push(d);
             }
         }
-        out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        out.sort_by_key(|a| a.to_string());
         Ok(out)
     }
 
@@ -352,7 +357,7 @@ impl Storage for FsStorage {
                 }
             }
         }
-        out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        out.sort_by_key(|a| a.to_string());
         Ok(out)
     }
 }

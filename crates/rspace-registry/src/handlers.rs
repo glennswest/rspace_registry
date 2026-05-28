@@ -45,8 +45,7 @@ pub fn validate_repo_name(name: &str) -> Result<(), OciError> {
             ));
         }
         for c in chars {
-            if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-')
-            {
+            if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-') {
                 return Err(OciError::new(
                     OciCode::NameInvalid,
                     "component contains invalid character",
@@ -126,7 +125,9 @@ pub async fn catalog(
     Ok((
         StatusCode::OK,
         h,
-        axum::Json(CatalogBody { repositories: repos }),
+        axum::Json(CatalogBody {
+            repositories: repos,
+        }),
     )
         .into_response())
 }
@@ -270,10 +271,7 @@ pub async fn manifest_put(
         HeaderName::from_static("docker-content-digest"),
         HeaderValue::from_str(&digest.to_string()).unwrap(),
     );
-    h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&media).unwrap(),
-    );
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&media).unwrap());
     Ok((StatusCode::CREATED, h).into_response())
 }
 
@@ -408,16 +406,12 @@ pub async fn upload_start(
         HeaderName::from_static("docker-upload-uuid"),
         HeaderValue::from_str(&session.id.to_string()).unwrap(),
     );
-    h.insert(
-        header::RANGE,
-        HeaderValue::from_str("0-0").unwrap(),
-    );
+    h.insert(header::RANGE, HeaderValue::from_str("0-0").unwrap());
     Ok((StatusCode::ACCEPTED, h).into_response())
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, OciError> {
-    Uuid::parse_str(s)
-        .map_err(|_| OciError::new(OciCode::BlobUploadInvalid, "invalid upload uuid"))
+    Uuid::parse_str(s).map_err(|_| OciError::new(OciCode::BlobUploadInvalid, "invalid upload uuid"))
 }
 
 pub async fn upload_status(
@@ -487,9 +481,8 @@ pub async fn upload_finish(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let id = parse_uuid(uuid)?;
-    let digest_s = digest_q.ok_or_else(|| {
-        OciError::new(OciCode::DigestInvalid, "missing ?digest= on finalise")
-    })?;
+    let digest_s = digest_q
+        .ok_or_else(|| OciError::new(OciCode::DigestInvalid, "missing ?digest= on finalise"))?;
     let digest = parse_digest(&digest_s)?;
     if !body.is_empty() {
         match storage.upload_append(id, &body).await {
@@ -637,9 +630,7 @@ pub async fn gc_run(storage: SharedStorage) -> Result<Response, OciError> {
 
 /// Snapshot of one partition. Counts are point-in-time and may differ
 /// between calls if the registry is taking writes concurrently.
-pub async fn partitions_list(
-    multi: Arc<MultiStore>,
-) -> Result<Response, OciError> {
+pub async fn partitions_list(multi: Arc<MultiStore>) -> Result<Response, OciError> {
     let mut out = Vec::with_capacity(multi.partitions().len());
     for (i, p) in multi.partitions().iter().enumerate() {
         let blobs = p.storage.list_all_blobs().await?;
@@ -671,7 +662,9 @@ pub async fn replicate_run(
     multi: Arc<MultiStore>,
     body: ReplicateRequest,
 ) -> Result<Response, OciError> {
-    let cfg = ReplicateConfig { tag_glob: body.tag_glob };
+    let cfg = ReplicateConfig {
+        tag_glob: body.tag_glob,
+    };
     let report = replicate::run(&multi, &cfg).await?;
     Ok(axum::Json(json!({
         "partitions_scanned": report.partitions_scanned,
