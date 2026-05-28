@@ -303,7 +303,7 @@ pub async fn blob_get(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let digest = parse_digest(digest_str)?;
-    let bytes = match storage.blob_read(&digest).await {
+    let bytes = match storage.blob_read(repo, &digest).await {
         Ok(b) => b,
         Err(StorageError::NotFound) => {
             return Err(OciError::new(OciCode::BlobUnknown, "blob unknown"))
@@ -339,7 +339,7 @@ pub async fn blob_delete(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let digest = parse_digest(digest_str)?;
-    match storage.blob_delete(&digest).await {
+    match storage.blob_delete(repo, &digest).await {
         Ok(()) => Ok((StatusCode::ACCEPTED, HeaderMap::new()).into_response()),
         Err(StorageError::NotFound) => Err(OciError::new(OciCode::BlobUnknown, "blob unknown")),
         Err(e) => Err(e.into()),
@@ -365,28 +365,35 @@ pub async fn upload_start(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
 
-    // Cross-repo mount: if the source blob exists, return 201 immediately.
+    // Cross-repo mount: make the blob visible at /v2/<target>/blobs/<d>.
+    //
+    // With per-repo storage routing, source and target may live on
+    // different backends. The OCI spec only requires the blob to be
+    // visible after the mount; if source and target route to the same
+    // backend, that's already true. If they route to different backends,
+    // we copy the bytes from source to target.
     if let Some(digest_s) = mount_q {
-        let _from = from_q;
         if let Ok(digest) = Digest::from_str(&digest_s) {
-            if storage.blob_exists(&digest).await? {
-                let mut h = HeaderMap::new();
-                let loc = format!("/v2/{repo}/blobs/{digest}");
-                h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
-                h.insert(
-                    HeaderName::from_static("docker-content-digest"),
-                    HeaderValue::from_str(&digest.to_string()).unwrap(),
-                );
-                return Ok((StatusCode::CREATED, h).into_response());
+            if storage.blob_exists(repo, &digest).await? {
+                return Ok(mount_response(repo, &digest));
+            }
+            if let Some(from) = from_q.as_deref() {
+                if validate_repo_name(from).is_ok() {
+                    if let Ok(bytes) = storage.blob_read(from, &digest).await {
+                        storage.blob_write(repo, &digest, &bytes).await?;
+                        return Ok(mount_response(repo, &digest));
+                    }
+                }
             }
         }
-        // Source doesn't exist → fall through to a normal upload session.
+        // Source doesn't exist anywhere reachable → fall through to a
+        // normal upload session.
     }
 
     // Monolithic upload: POST + ?digest=<d> with body.
     if let Some(digest_s) = digest_q {
         let digest = parse_digest(&digest_s)?;
-        storage.blob_write(&digest, &body).await?;
+        storage.blob_write(repo, &digest, &body).await?;
         let mut h = HeaderMap::new();
         let loc = format!("/v2/{repo}/blobs/{digest}");
         h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
@@ -398,7 +405,7 @@ pub async fn upload_start(
     }
 
     // Normal: start a new upload session.
-    let session = storage.upload_create().await?;
+    let session = storage.upload_create(repo).await?;
     let mut h = HeaderMap::new();
     let loc = format!("/v2/{repo}/blobs/uploads/{}", session.id);
     h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
@@ -414,6 +421,17 @@ fn parse_uuid(s: &str) -> Result<Uuid, OciError> {
     Uuid::parse_str(s).map_err(|_| OciError::new(OciCode::BlobUploadInvalid, "invalid upload uuid"))
 }
 
+fn mount_response(repo: &str, digest: &Digest) -> Response {
+    let mut h = HeaderMap::new();
+    let loc = format!("/v2/{repo}/blobs/{digest}");
+    h.insert(header::LOCATION, HeaderValue::from_str(&loc).unwrap());
+    h.insert(
+        HeaderName::from_static("docker-content-digest"),
+        HeaderValue::from_str(&digest.to_string()).unwrap(),
+    );
+    (StatusCode::CREATED, h).into_response()
+}
+
 pub async fn upload_status(
     storage: SharedStorage,
     repo: &str,
@@ -421,7 +439,7 @@ pub async fn upload_status(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let id = parse_uuid(uuid)?;
-    let status = match storage.upload_status(id).await {
+    let status = match storage.upload_status(repo, id).await {
         Ok(s) => s,
         Err(StorageError::NotFound) => {
             return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
@@ -452,7 +470,7 @@ pub async fn upload_chunk(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let id = parse_uuid(uuid)?;
-    let status = match storage.upload_append(id, &body).await {
+    let status = match storage.upload_append(repo, id, &body).await {
         Ok(s) => s,
         Err(StorageError::NotFound) => {
             return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
@@ -485,7 +503,7 @@ pub async fn upload_finish(
         .ok_or_else(|| OciError::new(OciCode::DigestInvalid, "missing ?digest= on finalise"))?;
     let digest = parse_digest(&digest_s)?;
     if !body.is_empty() {
-        match storage.upload_append(id, &body).await {
+        match storage.upload_append(repo, id, &body).await {
             Ok(_) => {}
             Err(StorageError::NotFound) => {
                 return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
@@ -493,7 +511,7 @@ pub async fn upload_finish(
             Err(e) => return Err(e.into()),
         }
     }
-    match storage.upload_finalize(id, &digest).await {
+    match storage.upload_finalize(repo, id, &digest).await {
         Ok(()) => {}
         Err(StorageError::NotFound) => {
             return Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))
@@ -524,7 +542,7 @@ pub async fn upload_cancel(
 ) -> Result<Response, OciError> {
     validate_repo_name(repo)?;
     let id = parse_uuid(uuid)?;
-    match storage.upload_cancel(id).await {
+    match storage.upload_cancel(repo, id).await {
         Ok(()) => Ok((StatusCode::NO_CONTENT, HeaderMap::new()).into_response()),
         Err(StorageError::NotFound) => {
             Err(OciError::new(OciCode::BlobUploadUnknown, "no such upload"))

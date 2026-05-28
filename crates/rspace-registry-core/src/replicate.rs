@@ -48,8 +48,10 @@ pub async fn run(
 
     // Collect the manifest-digest set we want present on each secondary.
     let mut wanted_manifests: BTreeSet<(String, Digest)> = BTreeSet::new();
-    // And the blob-digest set those manifests reference.
-    let mut wanted_blobs: BTreeSet<Digest> = BTreeSet::new();
+    // And the blob refs paired with the repo they were discovered in —
+    // a router places them on the repo's backend, single-backend stores
+    // ignore the repo.
+    let mut wanted_blobs: BTreeSet<(String, Digest)> = BTreeSet::new();
     // Track tag → digest so we can write the right tag pointer on secondaries.
     let mut wanted_tags: Vec<(String, String, Digest)> = Vec::new();
 
@@ -134,7 +136,7 @@ async fn walk_manifest(
     digest: Digest,
     bytes: Vec<u8>,
     wanted_manifests: &mut BTreeSet<(String, Digest)>,
-    wanted_blobs: &mut BTreeSet<Digest>,
+    wanted_blobs: &mut BTreeSet<(String, Digest)>,
 ) -> Result<(), StorageError> {
     if !wanted_manifests.insert((repo.to_string(), digest.clone())) {
         return Ok(());
@@ -170,15 +172,17 @@ async fn walk_manifest(
         .await?;
     }
 
-    // Blob refs (config + layers + subject if present).
+    // Blob refs (config + layers + subject if present) — tagged with the
+    // repo they were discovered in so the per-repo replication can place
+    // them on the right backend.
     if let Some(c) = parsed.config {
-        wanted_blobs.insert(c.digest);
+        wanted_blobs.insert((repo.to_string(), c.digest));
     }
     for l in parsed.layers {
-        wanted_blobs.insert(l.digest);
+        wanted_blobs.insert((repo.to_string(), l.digest));
     }
     if let Some(s) = parsed.subject {
-        wanted_blobs.insert(s.digest);
+        wanted_blobs.insert((repo.to_string(), s.digest));
     }
     Ok(())
 }
@@ -187,22 +191,22 @@ async fn copy_into(
     primary: &Partition,
     target: &Partition,
     wanted_manifests: &BTreeSet<(String, Digest)>,
-    wanted_blobs: &BTreeSet<Digest>,
+    wanted_blobs: &BTreeSet<(String, Digest)>,
     wanted_tags: &[(String, String, Digest)],
     report: &mut ReplicateReport,
 ) -> Result<(), StorageError> {
     // Blobs first — manifests reference them.
-    for d in wanted_blobs {
-        if target.storage.blob_exists(d).await? {
+    for (repo, d) in wanted_blobs {
+        if target.storage.blob_exists(repo, d).await? {
             continue;
         }
-        let bytes = match primary.storage.blob_read(d).await {
+        let bytes = match primary.storage.blob_read(repo, d).await {
             Ok(b) => b,
             Err(StorageError::NotFound) => continue,
             Err(e) => return Err(e),
         };
         let len = bytes.len() as u64;
-        target.storage.blob_write(d, &bytes).await?;
+        target.storage.blob_write(repo, d, &bytes).await?;
         report.blobs_copied += 1;
         report.bytes_copied += len;
     }

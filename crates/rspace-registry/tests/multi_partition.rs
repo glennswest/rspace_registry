@@ -248,7 +248,7 @@ async fn read_falls_through_to_secondary_via_http() {
     let layer_digest = format!("sha256:{}", sha256_hex(layer));
     let parsed: rspace_registry_core::Digest = layer_digest.parse().unwrap();
     let a = &h.multi.partitions()[0].storage;
-    a.blob_delete(&parsed).await.unwrap();
+    a.blob_delete("app/y", &parsed).await.unwrap();
 
     // Now GET via the registry should fall through to B and succeed.
     let (status, _h, body) = send(

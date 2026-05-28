@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-05-28
+- **BREAKING (core):** Thread `repo: &str` through every blob and upload op on the `Storage` trait (`blob_exists`/`size`/`read`/`write`/`delete`, `upload_create`/`status`/`append`/`finalize`/`cancel`). Enables per-repo storage routing (issue #1). Single-backend impls (`FsStorage`, `MultiStore` children) ignore the parameter.
+- **feat (registry):** Cross-repo blob mount (`POST /v2/<target>/blobs/uploads?mount=&from=`) now copies bytes between backends when source and target route to different storage roots.
+- **chore (core):** Update `gc::run` to locate a blob's backend via `blob_exists` probes before sweep — works correctly under both single-backend and routing storages.
+- **chore (core):** Replication reconciler now tracks `(repo, digest)` pairs so blobs land on the right per-repo backend on each secondary.
+
 ### 2026-05-27
 - **ci:** Gate every `ci.yml` job with `if: github.server_url != 'https://github.com'` so GitHub Actions records the workflow_run but skips all jobs (zero minutes) — CI runs on forcicd.g8.lo (Forgejo + act_runner). Pin `Swatinem/rust-cache@v2.7.3` for forcicd's node20 runner. Add `build-linux` job (x86_64 + aarch64 cross-compile of `rspace-registry`); disable the macOS job (no forcicd Mac runner).
 - **ci:** Add `release.yml` — forcicd builds x86_64 + aarch64 tarballs on `v*` tags and publishes them to the canonical github.com release via `softprops/action-gh-release@v2.0.8` using the `GH_PAT` secret; alpha-by-default release type with `workflow_dispatch` promotion.

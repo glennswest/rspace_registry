@@ -126,42 +126,54 @@ impl MultiStore {
 impl Storage for MultiStore {
     // ---- Blobs ----------------------------------------------------------
 
-    async fn blob_exists(&self, digest: &Digest) -> Result<bool, StorageError> {
+    async fn blob_exists(&self, repo: &str, digest: &Digest) -> Result<bool, StorageError> {
         for p in &self.partitions {
-            if p.storage.blob_exists(digest).await? {
+            if p.storage.blob_exists(repo, digest).await? {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    async fn blob_size(&self, digest: &Digest) -> Result<u64, StorageError> {
+    async fn blob_size(&self, repo: &str, digest: &Digest) -> Result<u64, StorageError> {
+        let repo = repo.to_string();
         let digest = digest.clone();
         self.read_fallthrough(move |s| {
+            let r = repo.clone();
             let d = digest.clone();
-            async move { s.blob_size(&d).await }
+            async move { s.blob_size(&r, &d).await }
         })
         .await
     }
 
-    async fn blob_read(&self, digest: &Digest) -> Result<Vec<u8>, StorageError> {
+    async fn blob_read(&self, repo: &str, digest: &Digest) -> Result<Vec<u8>, StorageError> {
+        let repo = repo.to_string();
         let digest = digest.clone();
         self.read_fallthrough(move |s| {
+            let r = repo.clone();
             let d = digest.clone();
-            async move { s.blob_read(&d).await }
+            async move { s.blob_read(&r, &d).await }
         })
         .await
     }
 
-    async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError> {
-        self.primary().storage.blob_write(expected, content).await
+    async fn blob_write(
+        &self,
+        repo: &str,
+        expected: &Digest,
+        content: &[u8],
+    ) -> Result<(), StorageError> {
+        self.primary()
+            .storage
+            .blob_write(repo, expected, content)
+            .await
     }
 
-    async fn blob_delete(&self, digest: &Digest) -> Result<(), StorageError> {
+    async fn blob_delete(&self, repo: &str, digest: &Digest) -> Result<(), StorageError> {
         let mut deleted_any = false;
         let mut last_err: Option<StorageError> = None;
         for p in &self.partitions {
-            match p.storage.blob_delete(digest).await {
+            match p.storage.blob_delete(repo, digest).await {
                 Ok(()) => deleted_any = true,
                 Err(StorageError::NotFound) => {}
                 Err(e) => last_err = Some(e),
@@ -182,24 +194,37 @@ impl Storage for MultiStore {
     // partition (managed externally) would orphan in-flight uploads;
     // clients should retry. Documented in CHANGELOG.
 
-    async fn upload_create(&self) -> Result<UploadStatus, StorageError> {
-        self.primary().storage.upload_create().await
+    async fn upload_create(&self, repo: &str) -> Result<UploadStatus, StorageError> {
+        self.primary().storage.upload_create(repo).await
     }
 
-    async fn upload_status(&self, id: Uuid) -> Result<UploadStatus, StorageError> {
-        self.primary().storage.upload_status(id).await
+    async fn upload_status(&self, repo: &str, id: Uuid) -> Result<UploadStatus, StorageError> {
+        self.primary().storage.upload_status(repo, id).await
     }
 
-    async fn upload_append(&self, id: Uuid, chunk: &[u8]) -> Result<UploadStatus, StorageError> {
-        self.primary().storage.upload_append(id, chunk).await
+    async fn upload_append(
+        &self,
+        repo: &str,
+        id: Uuid,
+        chunk: &[u8],
+    ) -> Result<UploadStatus, StorageError> {
+        self.primary().storage.upload_append(repo, id, chunk).await
     }
 
-    async fn upload_finalize(&self, id: Uuid, expected: &Digest) -> Result<(), StorageError> {
-        self.primary().storage.upload_finalize(id, expected).await
+    async fn upload_finalize(
+        &self,
+        repo: &str,
+        id: Uuid,
+        expected: &Digest,
+    ) -> Result<(), StorageError> {
+        self.primary()
+            .storage
+            .upload_finalize(repo, id, expected)
+            .await
     }
 
-    async fn upload_cancel(&self, id: Uuid) -> Result<(), StorageError> {
-        self.primary().storage.upload_cancel(id).await
+    async fn upload_cancel(&self, repo: &str, id: Uuid) -> Result<(), StorageError> {
+        self.primary().storage.upload_cancel(repo, id).await
     }
 
     // ---- Manifests ------------------------------------------------------
@@ -310,10 +335,10 @@ mod tests {
 
     #[async_trait]
     impl Storage for MemStore {
-        async fn blob_exists(&self, d: &Digest) -> Result<bool, StorageError> {
+        async fn blob_exists(&self, _repo: &str, d: &Digest) -> Result<bool, StorageError> {
             Ok(self.blobs.lock().await.contains_key(d))
         }
-        async fn blob_size(&self, d: &Digest) -> Result<u64, StorageError> {
+        async fn blob_size(&self, _repo: &str, d: &Digest) -> Result<u64, StorageError> {
             self.blobs
                 .lock()
                 .await
@@ -321,7 +346,7 @@ mod tests {
                 .map(|v| v.len() as u64)
                 .ok_or(StorageError::NotFound)
         }
-        async fn blob_read(&self, d: &Digest) -> Result<Vec<u8>, StorageError> {
+        async fn blob_read(&self, _repo: &str, d: &Digest) -> Result<Vec<u8>, StorageError> {
             self.blobs
                 .lock()
                 .await
@@ -329,14 +354,19 @@ mod tests {
                 .cloned()
                 .ok_or(StorageError::NotFound)
         }
-        async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError> {
+        async fn blob_write(
+            &self,
+            _repo: &str,
+            expected: &Digest,
+            content: &[u8],
+        ) -> Result<(), StorageError> {
             self.blobs
                 .lock()
                 .await
                 .insert(expected.clone(), content.to_vec());
             Ok(())
         }
-        async fn blob_delete(&self, d: &Digest) -> Result<(), StorageError> {
+        async fn blob_delete(&self, _repo: &str, d: &Digest) -> Result<(), StorageError> {
             self.blobs
                 .lock()
                 .await
@@ -344,17 +374,22 @@ mod tests {
                 .map(|_| ())
                 .ok_or(StorageError::NotFound)
         }
-        async fn upload_create(&self) -> Result<UploadStatus, StorageError> {
+        async fn upload_create(&self, _repo: &str) -> Result<UploadStatus, StorageError> {
             Ok(UploadStatus {
                 id: Uuid::new_v4(),
                 offset: 0,
             })
         }
-        async fn upload_status(&self, id: Uuid) -> Result<UploadStatus, StorageError> {
+        async fn upload_status(
+            &self,
+            _repo: &str,
+            id: Uuid,
+        ) -> Result<UploadStatus, StorageError> {
             Ok(UploadStatus { id, offset: 0 })
         }
         async fn upload_append(
             &self,
+            _repo: &str,
             id: Uuid,
             chunk: &[u8],
         ) -> Result<UploadStatus, StorageError> {
@@ -363,10 +398,15 @@ mod tests {
                 offset: chunk.len() as u64,
             })
         }
-        async fn upload_finalize(&self, _id: Uuid, _expected: &Digest) -> Result<(), StorageError> {
+        async fn upload_finalize(
+            &self,
+            _repo: &str,
+            _id: Uuid,
+            _expected: &Digest,
+        ) -> Result<(), StorageError> {
             Ok(())
         }
-        async fn upload_cancel(&self, _id: Uuid) -> Result<(), StorageError> {
+        async fn upload_cancel(&self, _repo: &str, _id: Uuid) -> Result<(), StorageError> {
             Ok(())
         }
         async fn manifest_get(
@@ -501,14 +541,22 @@ mod tests {
         (multi, a, b)
     }
 
+    const R: &str = "x/y";
+
     #[tokio::test]
     async fn writes_go_to_primary_only() {
         let (multi, a, b) = make_multi();
         let data = b"hello";
         let d = digest_of(data);
-        multi.blob_write(&d, data).await.unwrap();
-        assert!(a.blob_exists(&d).await.unwrap(), "primary should hold blob");
-        assert!(!b.blob_exists(&d).await.unwrap(), "secondary should not");
+        multi.blob_write(R, &d, data).await.unwrap();
+        assert!(
+            a.blob_exists(R, &d).await.unwrap(),
+            "primary should hold blob"
+        );
+        assert!(
+            !b.blob_exists(R, &d).await.unwrap(),
+            "secondary should not"
+        );
     }
 
     #[tokio::test]
@@ -517,10 +565,10 @@ mod tests {
         let data = b"only-on-b";
         let d = digest_of(data);
         // Plant directly into secondary, bypassing the multi-store.
-        b.blob_write(&d, data).await.unwrap();
-        assert_eq!(multi.blob_read(&d).await.unwrap(), data);
+        b.blob_write(R, &d, data).await.unwrap();
+        assert_eq!(multi.blob_read(R, &d).await.unwrap(), data);
         // Primary still doesn't have it (fallthrough is read-only).
-        assert!(!a.blob_exists(&d).await.unwrap());
+        assert!(!a.blob_exists(R, &d).await.unwrap());
     }
 
     #[tokio::test]
@@ -531,9 +579,9 @@ mod tests {
         // the primary without consulting the secondary.
         let data = b"shared";
         let d = digest_of(data);
-        a.blob_write(&d, data).await.unwrap();
-        b.blob_write(&d, data).await.unwrap();
-        assert_eq!(multi.blob_read(&d).await.unwrap(), data);
+        a.blob_write(R, &d, data).await.unwrap();
+        b.blob_write(R, &d, data).await.unwrap();
+        assert_eq!(multi.blob_read(R, &d).await.unwrap(), data);
     }
 
     #[tokio::test]
@@ -541,11 +589,11 @@ mod tests {
         let (multi, a, b) = make_multi();
         let data = b"to-be-deleted";
         let d = digest_of(data);
-        a.blob_write(&d, data).await.unwrap();
-        b.blob_write(&d, data).await.unwrap();
-        multi.blob_delete(&d).await.unwrap();
-        assert!(!a.blob_exists(&d).await.unwrap());
-        assert!(!b.blob_exists(&d).await.unwrap());
+        a.blob_write(R, &d, data).await.unwrap();
+        b.blob_write(R, &d, data).await.unwrap();
+        multi.blob_delete(R, &d).await.unwrap();
+        assert!(!a.blob_exists(R, &d).await.unwrap());
+        assert!(!b.blob_exists(R, &d).await.unwrap());
     }
 
     #[tokio::test]

@@ -6,9 +6,14 @@
 //! - `rspace-registry-rspacefs` (future) — direct integration with
 //!   containers-storage layer dirs so push + runtime share the same bytes
 //!
-//! Trait shape mirrors the OCI Distribution Spec v1.1 operations a registry
-//! actually needs. Anything beyond that (auth, signing, mirroring, GC
-//! scheduling) lives one layer up in the HTTP handlers / control plane.
+//! ## Per-repo routing
+//!
+//! Every blob and upload operation carries the repository name. This is
+//! how [`crate::repo_router`] can place different repos on different
+//! filesystem mounts (per-repo storage roots; see issue #1). Backends
+//! that don't care about the repo dimension are free to ignore it —
+//! `FsStorage` just stores everything under its single root, and its
+//! placement-per-repo is achieved by composing it inside a router.
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -52,30 +57,49 @@ pub struct UploadStatus {
 #[async_trait]
 pub trait Storage: Send + Sync {
     // ---- Blobs ----------------------------------------------------------
+    //
+    // The `repo` parameter lets a routing backend place different repos
+    // on different filesystem roots. Single-root backends (`FsStorage`)
+    // may ignore it.
 
-    async fn blob_exists(&self, digest: &Digest) -> Result<bool, StorageError>;
-    async fn blob_size(&self, digest: &Digest) -> Result<u64, StorageError>;
-    async fn blob_read(&self, digest: &Digest) -> Result<Vec<u8>, StorageError>;
+    async fn blob_exists(&self, repo: &str, digest: &Digest) -> Result<bool, StorageError>;
+    async fn blob_size(&self, repo: &str, digest: &Digest) -> Result<u64, StorageError>;
+    async fn blob_read(&self, repo: &str, digest: &Digest) -> Result<Vec<u8>, StorageError>;
     /// Atomically write a blob whose content hashes to `expected`. The
     /// backend must reject a mismatched digest with `DigestMismatch`.
-    async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError>;
-    async fn blob_delete(&self, digest: &Digest) -> Result<(), StorageError>;
+    async fn blob_write(
+        &self,
+        repo: &str,
+        expected: &Digest,
+        content: &[u8],
+    ) -> Result<(), StorageError>;
+    async fn blob_delete(&self, repo: &str, digest: &Digest) -> Result<(), StorageError>;
 
     // ---- Upload sessions ------------------------------------------------
     //
-    // Chunked uploads land in a per-session tmp file. `upload_finalize`
-    // verifies the digest and atomically moves the bytes into the
-    // content-addressed blob tree.
+    // Chunked uploads land in a per-session tmp file scoped to one repo.
+    // `upload_finalize` verifies the digest and atomically moves the
+    // bytes into the content-addressed blob tree for that repo.
 
-    async fn upload_create(&self) -> Result<UploadStatus, StorageError>;
-    async fn upload_status(&self, id: Uuid) -> Result<UploadStatus, StorageError>;
+    async fn upload_create(&self, repo: &str) -> Result<UploadStatus, StorageError>;
+    async fn upload_status(&self, repo: &str, id: Uuid) -> Result<UploadStatus, StorageError>;
     /// Append a chunk. Returns the new status (post-append offset).
-    async fn upload_append(&self, id: Uuid, chunk: &[u8]) -> Result<UploadStatus, StorageError>;
+    async fn upload_append(
+        &self,
+        repo: &str,
+        id: Uuid,
+        chunk: &[u8],
+    ) -> Result<UploadStatus, StorageError>;
     /// Finalise the upload, validating that the accumulated bytes hash to
     /// `expected`, then move into the blob store. Idempotent if the digest
     /// already exists.
-    async fn upload_finalize(&self, id: Uuid, expected: &Digest) -> Result<(), StorageError>;
-    async fn upload_cancel(&self, id: Uuid) -> Result<(), StorageError>;
+    async fn upload_finalize(
+        &self,
+        repo: &str,
+        id: Uuid,
+        expected: &Digest,
+    ) -> Result<(), StorageError>;
+    async fn upload_cancel(&self, repo: &str, id: Uuid) -> Result<(), StorageError>;
 
     // ---- Manifests ------------------------------------------------------
 
@@ -92,7 +116,11 @@ pub trait Storage: Send + Sync {
         reference: &Reference,
         content: &[u8],
     ) -> Result<Digest, StorageError>;
-    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError>;
+    async fn manifest_delete(
+        &self,
+        repo: &str,
+        reference: &Reference,
+    ) -> Result<(), StorageError>;
 
     // ---- Listing / GC ---------------------------------------------------
 
@@ -106,5 +134,7 @@ pub trait Storage: Send + Sync {
     /// and GC.
     async fn list_manifest_digests(&self, repo: &str) -> Result<Vec<Digest>, StorageError>;
     /// Every blob digest stored across the registry. Used by GC sweep.
+    /// For a router-style backend this is the union across all child
+    /// backends, deduplicated.
     async fn list_all_blobs(&self) -> Result<Vec<Digest>, StorageError>;
 }

@@ -5,6 +5,15 @@
 //! since manifests are also stored as blobs in some backend layouts). Any
 //! blob digest in `list_all_blobs` but not in the reachable set is
 //! unreferenced and gets deleted.
+//!
+//! ## Repo argument on sweep
+//!
+//! Per-repo routing means `blob_delete(repo, digest)` dispatches to a
+//! repo's backing store. When sweeping a digest we don't have a single
+//! authoritative repo — for a single-backend store that doesn't matter
+//! (the backend ignores `repo`), but for a router we try each known repo
+//! in turn until one of them owns the blob's backend. Inefficient but
+//! correct; GC is rare enough that this is acceptable.
 
 use std::collections::BTreeSet;
 
@@ -55,8 +64,13 @@ pub async fn run<S: Storage + ?Sized>(storage: &S) -> Result<GcReport, StorageEr
         if reachable.contains(&blob) {
             continue;
         }
-        let size = storage.blob_size(&blob).await.unwrap_or(0);
-        match storage.blob_delete(&blob).await {
+        // For single-backend Storage (FsStorage), `repo` is ignored, so
+        // the first repo we find works. For a router, we walk repos to
+        // find the one whose backend currently holds this blob.
+        let owner = locate_owner(storage, &repos, &blob).await;
+        let probe_repo: &str = owner.as_deref().unwrap_or("");
+        let size = storage.blob_size(probe_repo, &blob).await.unwrap_or(0);
+        match storage.blob_delete(probe_repo, &blob).await {
             Ok(()) => {
                 report.deleted_blobs += 1;
                 report.deleted_bytes += size;
@@ -67,4 +81,21 @@ pub async fn run<S: Storage + ?Sized>(storage: &S) -> Result<GcReport, StorageEr
     }
 
     Ok(report)
+}
+
+/// Find a repo whose backend currently holds `digest`. Returns `None` if
+/// no known repo's backend has it (orphan blob in a router with no
+/// matching rule) — caller can fall back to `""` for single-backend
+/// stores where `repo` is ignored anyway.
+async fn locate_owner<S: Storage + ?Sized>(
+    storage: &S,
+    repos: &[String],
+    digest: &Digest,
+) -> Option<String> {
+    for repo in repos {
+        if storage.blob_exists(repo, digest).await.unwrap_or(false) {
+            return Some(repo.clone());
+        }
+    }
+    None
 }

@@ -116,26 +116,35 @@ fn io_to_storage(e: std::io::Error) -> StorageError {
     }
 }
 
+// `FsStorage` is a single-root backend — the `repo` argument on every
+// blob and upload op is accepted but ignored. Per-repo placement is
+// achieved by composing FsStorage instances inside a `RepoRouter`.
+
 #[async_trait]
 impl Storage for FsStorage {
-    async fn blob_exists(&self, digest: &Digest) -> Result<bool, StorageError> {
+    async fn blob_exists(&self, _repo: &str, digest: &Digest) -> Result<bool, StorageError> {
         Ok(fs::try_exists(self.blob_path(digest)).await?)
     }
 
-    async fn blob_size(&self, digest: &Digest) -> Result<u64, StorageError> {
+    async fn blob_size(&self, _repo: &str, digest: &Digest) -> Result<u64, StorageError> {
         let m = fs::metadata(self.blob_path(digest))
             .await
             .map_err(io_to_storage)?;
         Ok(m.len())
     }
 
-    async fn blob_read(&self, digest: &Digest) -> Result<Vec<u8>, StorageError> {
+    async fn blob_read(&self, _repo: &str, digest: &Digest) -> Result<Vec<u8>, StorageError> {
         fs::read(self.blob_path(digest))
             .await
             .map_err(io_to_storage)
     }
 
-    async fn blob_write(&self, expected: &Digest, content: &[u8]) -> Result<(), StorageError> {
+    async fn blob_write(
+        &self,
+        _repo: &str,
+        expected: &Digest,
+        content: &[u8],
+    ) -> Result<(), StorageError> {
         let actual = hash_content(expected.algorithm, content);
         if actual != *expected {
             return Err(StorageError::DigestMismatch {
@@ -147,7 +156,7 @@ impl Storage for FsStorage {
         Ok(())
     }
 
-    async fn blob_delete(&self, digest: &Digest) -> Result<(), StorageError> {
+    async fn blob_delete(&self, _repo: &str, digest: &Digest) -> Result<(), StorageError> {
         fs::remove_file(self.blob_path(digest))
             .await
             .map_err(io_to_storage)
@@ -155,7 +164,7 @@ impl Storage for FsStorage {
 
     // ---- Upload sessions ------------------------------------------------
 
-    async fn upload_create(&self) -> Result<UploadStatus, StorageError> {
+    async fn upload_create(&self, _repo: &str) -> Result<UploadStatus, StorageError> {
         let id = Uuid::new_v4();
         let path = self.upload_path(id);
         if let Some(p) = path.parent() {
@@ -165,7 +174,7 @@ impl Storage for FsStorage {
         Ok(UploadStatus { id, offset: 0 })
     }
 
-    async fn upload_status(&self, id: Uuid) -> Result<UploadStatus, StorageError> {
+    async fn upload_status(&self, _repo: &str, id: Uuid) -> Result<UploadStatus, StorageError> {
         let m = fs::metadata(self.upload_path(id))
             .await
             .map_err(io_to_storage)?;
@@ -175,7 +184,12 @@ impl Storage for FsStorage {
         })
     }
 
-    async fn upload_append(&self, id: Uuid, chunk: &[u8]) -> Result<UploadStatus, StorageError> {
+    async fn upload_append(
+        &self,
+        _repo: &str,
+        id: Uuid,
+        chunk: &[u8],
+    ) -> Result<UploadStatus, StorageError> {
         let path = self.upload_path(id);
         let mut f = fs::OpenOptions::new()
             .append(true)
@@ -188,7 +202,12 @@ impl Storage for FsStorage {
         Ok(UploadStatus { id, offset })
     }
 
-    async fn upload_finalize(&self, id: Uuid, expected: &Digest) -> Result<(), StorageError> {
+    async fn upload_finalize(
+        &self,
+        _repo: &str,
+        id: Uuid,
+        expected: &Digest,
+    ) -> Result<(), StorageError> {
         let upload_path = self.upload_path(id);
         let bytes = fs::read(&upload_path).await.map_err(io_to_storage)?;
         let actual = hash_content(expected.algorithm, &bytes);
@@ -211,7 +230,7 @@ impl Storage for FsStorage {
         Ok(())
     }
 
-    async fn upload_cancel(&self, id: Uuid) -> Result<(), StorageError> {
+    async fn upload_cancel(&self, _repo: &str, id: Uuid) -> Result<(), StorageError> {
         fs::remove_file(self.upload_path(id))
             .await
             .map_err(io_to_storage)
@@ -409,6 +428,8 @@ fn walk_repos<'a>(
 mod tests {
     use super::*;
 
+    const R: &str = "library/foo";
+
     #[tokio::test]
     async fn blob_roundtrip() {
         let tmp = tempdir();
@@ -418,12 +439,12 @@ mod tests {
             algorithm: Algorithm::Sha256,
             hex: hex::encode(Sha256::digest(bytes)),
         };
-        fs.blob_write(&d, bytes).await.unwrap();
-        assert!(fs.blob_exists(&d).await.unwrap());
-        assert_eq!(fs.blob_size(&d).await.unwrap(), bytes.len() as u64);
-        assert_eq!(fs.blob_read(&d).await.unwrap(), bytes);
-        fs.blob_delete(&d).await.unwrap();
-        assert!(!fs.blob_exists(&d).await.unwrap());
+        fs.blob_write(R, &d, bytes).await.unwrap();
+        assert!(fs.blob_exists(R, &d).await.unwrap());
+        assert_eq!(fs.blob_size(R, &d).await.unwrap(), bytes.len() as u64);
+        assert_eq!(fs.blob_read(R, &d).await.unwrap(), bytes);
+        fs.blob_delete(R, &d).await.unwrap();
+        assert!(!fs.blob_exists(R, &d).await.unwrap());
     }
 
     #[tokio::test]
@@ -434,7 +455,7 @@ mod tests {
             algorithm: Algorithm::Sha256,
             hex: "0".repeat(64),
         };
-        let err = fs.blob_write(&wrong, b"hello").await.unwrap_err();
+        let err = fs.blob_write(R, &wrong, b"hello").await.unwrap_err();
         assert!(matches!(err, StorageError::DigestMismatch { .. }));
     }
 
@@ -463,31 +484,31 @@ mod tests {
     async fn upload_chunked_then_finalise() {
         let tmp = tempdir();
         let fs = FsStorage::new(&tmp).unwrap();
-        let start = fs.upload_create().await.unwrap();
+        let start = fs.upload_create(R).await.unwrap();
         assert_eq!(start.offset, 0);
-        let s1 = fs.upload_append(start.id, b"hel").await.unwrap();
+        let s1 = fs.upload_append(R, start.id, b"hel").await.unwrap();
         assert_eq!(s1.offset, 3);
-        let s2 = fs.upload_append(start.id, b"lo").await.unwrap();
+        let s2 = fs.upload_append(R, start.id, b"lo").await.unwrap();
         assert_eq!(s2.offset, 5);
         let digest = Digest {
             algorithm: Algorithm::Sha256,
             hex: hex::encode(Sha256::digest(b"hello")),
         };
-        fs.upload_finalize(start.id, &digest).await.unwrap();
-        assert_eq!(fs.blob_read(&digest).await.unwrap(), b"hello");
+        fs.upload_finalize(R, start.id, &digest).await.unwrap();
+        assert_eq!(fs.blob_read(R, &digest).await.unwrap(), b"hello");
     }
 
     #[tokio::test]
     async fn upload_finalize_rejects_wrong_digest() {
         let tmp = tempdir();
         let fs = FsStorage::new(&tmp).unwrap();
-        let s = fs.upload_create().await.unwrap();
-        fs.upload_append(s.id, b"hello").await.unwrap();
+        let s = fs.upload_create(R).await.unwrap();
+        fs.upload_append(R, s.id, b"hello").await.unwrap();
         let wrong = Digest {
             algorithm: Algorithm::Sha256,
             hex: "0".repeat(64),
         };
-        let err = fs.upload_finalize(s.id, &wrong).await.unwrap_err();
+        let err = fs.upload_finalize(R, s.id, &wrong).await.unwrap_err();
         assert!(matches!(err, StorageError::DigestMismatch { .. }));
     }
 
@@ -510,7 +531,7 @@ mod tests {
             algorithm: Algorithm::Sha256,
             hex: hex::encode(Sha256::digest(b"x")),
         };
-        fs.blob_write(&d, b"x").await.unwrap();
+        fs.blob_write(R, &d, b"x").await.unwrap();
 
         let repos = fs.list_repos().await.unwrap();
         assert_eq!(repos, vec!["library/alpine", "test/busybox"]);
