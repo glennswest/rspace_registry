@@ -185,6 +185,16 @@ fn manifest_media_type(bytes: &[u8], hinted: Option<&str>) -> String {
             return h.to_string();
         }
     }
+    // The manifest's own `mediaType` field is authoritative when present —
+    // serving a Docker v2s2 manifest under an OCI Content-Type makes
+    // clients reject it as a "mixed OCI image".
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(mt) = v.get("mediaType").and_then(|m| m.as_str()) {
+            if MANIFEST_MEDIA_TYPES.contains(&mt) {
+                return mt.to_string();
+            }
+        }
+    }
     // Sniff: an image index has a `manifests` array; an image manifest has
     // `layers`. We default to OCI image manifest for everything else.
     match parse_manifest_refs(bytes) {

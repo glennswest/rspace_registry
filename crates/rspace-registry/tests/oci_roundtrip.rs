@@ -440,3 +440,34 @@ async fn upload_start_accepts_trailing_slash() {
         assert!(headers.get("location").is_some(), "POST {path} location");
     }
 }
+
+/// A Docker v2s2 manifest must be served back with its own mediaType as
+/// Content-Type — serving it as OCI makes podman reject the pull with
+/// "invalid mixed OCI image with Docker v2s2 config".
+#[tokio::test]
+async fn docker_v2s2_manifest_served_with_docker_content_type() {
+    let (app, _tmp) = router();
+    let docker_mt = "application/vnd.docker.distribution.manifest.v2+json";
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{docker_mt}","config":{{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"sha256:{zeros}","size":2}},"layers":[]}}"#,
+        zeros = "0".repeat(64)
+    );
+    let (status, _, _) = send(
+        &app,
+        Method::PUT,
+        "/v2/t/manifests/v1",
+        Some(manifest.clone().into_bytes()),
+        Some(docker_mt),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    for method in [Method::GET, Method::HEAD] {
+        let (status, headers, _) = send(&app, method.clone(), "/v2/t/manifests/v1", None, None).await;
+        assert_eq!(status, StatusCode::OK, "{method} manifest");
+        assert_eq!(
+            headers.get("content-type").unwrap().to_str().unwrap(),
+            docker_mt,
+            "{method} content-type"
+        );
+    }
+}
