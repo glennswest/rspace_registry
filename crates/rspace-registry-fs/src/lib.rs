@@ -34,10 +34,22 @@ pub struct FsStorage {
 impl FsStorage {
     pub fn new(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
-        std::fs::create_dir_all(root.join("blobs"))?;
-        std::fs::create_dir_all(root.join("manifests"))?;
-        std::fs::create_dir_all(root.join("uploads"))?;
+        // A read-only root (e.g. a preloaded store snapshot used as a
+        // MultiStore fall-through partition) must still open; only fail
+        // if the layout can't be created AND the root isn't usable as a
+        // directory. Writes to such a partition fail at operation time.
+        for dir in [
+            root.clone(),
+            root.join("blobs"),
+            root.join("manifests"),
+            root.join("uploads"),
+        ] {
+            match std::fs::create_dir_all(&dir) {
+                Ok(()) => {}
+                Err(_) if root.is_dir() => break,
+                Err(e) => return Err(e),
+            }
+        }
         Ok(Self { root })
     }
 
@@ -541,6 +553,26 @@ mod tests {
 
         let blobs = fs.list_all_blobs().await.unwrap();
         assert_eq!(blobs, vec![d]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opens_read_only_root() {
+        use std::os::unix::fs::PermissionsExt;
+        // A preloaded store snapshot mounts read-only; the backend must
+        // still open it as a fall-through partition.
+        let root = tempdir();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let fs = FsStorage::new(&root).expect("read-only root must open");
+        // Reads answer (empty), writes fail at operation time — not at open.
+        assert!(!fs
+            .blob_exists("r", &"sha256:".to_string().parse().unwrap_or_else(|_| Digest {
+                algorithm: Algorithm::Sha256,
+                hex: "0".repeat(64),
+            }))
+            .await
+            .unwrap());
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn tempdir() -> PathBuf {

@@ -5,6 +5,7 @@
 ### 2026-07-17
 - **fix (registry):** Accept the spec-canonical trailing-slash form of upload start (`POST /v2/<name>/blobs/uploads/`), which podman/docker send; the bare form keeps working. Previously 404'd, breaking real client pushes.
 - **fix (registry):** Serve manifests with their embedded `mediaType` as Content-Type instead of always defaulting to OCI. A Docker v2s2 manifest served under an OCI Content-Type made podman reject pulls with "invalid mixed OCI image with Docker v2s2 config".
+- **fix (fs):** `FsStorage::new` opens a read-only root (e.g. a preloaded store snapshot mounted as a MultiStore fall-through partition) instead of failing on layout `mkdir`; writes to such a partition fail at operation time. Needed by stormcos's system-registry static pod, whose release partition mounts read-only.
 
 ### 2026-05-28
 - **BREAKING (core):** Thread `repo: &str` through every blob and upload op on the `Storage` trait (`blob_exists`/`size`/`read`/`write`/`delete`, `upload_create`/`status`/`append`/`finalize`/`cancel`). Enables per-repo storage routing (issue #1). Single-backend impls (`FsStorage`, `MultiStore` children) ignore the parameter.
