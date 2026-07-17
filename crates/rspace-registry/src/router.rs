@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
-use rspace_registry_core::MultiStore;
+use rspace_registry_core::{MultiStore, RepoRouter};
 
 use crate::auth::{self, Htpasswd};
 use crate::error::{OciCode, OciError};
@@ -28,6 +28,9 @@ pub struct AppState {
     /// When `storage` is a `MultiStore`, expose admin endpoints
     /// (`/admin/partitions`, `/admin/replicate`) backed by it.
     pub multi: Option<Arc<MultiStore>>,
+    /// When `storage` is a `RepoRouter`, expose admin endpoints
+    /// (`GET /admin/repo-roots`, `POST /admin/repo-root`) backed by it.
+    pub router: Option<Arc<RepoRouter>>,
     pub auth: Option<Arc<Htpasswd>>,
     pub realm: String,
     /// When set, exposes `POST /admin/gc` as an authenticated trigger.
@@ -39,6 +42,7 @@ impl AppState {
         Self {
             storage,
             multi: None,
+            router: None,
             auth: None,
             realm: "rspace-registry".to_string(),
             admin_enabled: true,
@@ -47,6 +51,11 @@ impl AppState {
 
     pub fn with_multi(mut self, multi: Arc<MultiStore>) -> Self {
         self.multi = Some(multi);
+        self
+    }
+
+    pub fn with_router(mut self, router: Arc<RepoRouter>) -> Self {
+        self.router = Some(router);
         self
     }
 }
@@ -143,6 +152,26 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                         }
                     };
                     return into_response(handlers::replicate_run(multi.clone(), req).await);
+                }
+            }
+            if let Some(router) = state.router.as_ref() {
+                if path == "/admin/repo-roots" && (method == Method::GET || method == Method::HEAD)
+                {
+                    return into_response(handlers::repo_roots_list(router.clone()).await);
+                }
+                if path == "/admin/repo-root" && method == Method::POST {
+                    let req: handlers::RepoRootRequest = match serde_json::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return OciError::new(
+                                OciCode::BlobUploadInvalid,
+                                format!("bad repo-root body: {e}"),
+                            )
+                            .with_status(StatusCode::BAD_REQUEST)
+                            .into_response();
+                        }
+                    };
+                    return into_response(handlers::repo_root_upsert(router.clone(), req).await);
                 }
             }
         }

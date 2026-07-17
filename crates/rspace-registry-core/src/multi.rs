@@ -380,11 +380,7 @@ mod tests {
                 offset: 0,
             })
         }
-        async fn upload_status(
-            &self,
-            _repo: &str,
-            id: Uuid,
-        ) -> Result<UploadStatus, StorageError> {
+        async fn upload_status(&self, _repo: &str, id: Uuid) -> Result<UploadStatus, StorageError> {
             Ok(UploadStatus { id, offset: 0 })
         }
         async fn upload_append(
@@ -553,10 +549,7 @@ mod tests {
             a.blob_exists(R, &d).await.unwrap(),
             "primary should hold blob"
         );
-        assert!(
-            !b.blob_exists(R, &d).await.unwrap(),
-            "secondary should not"
-        );
+        assert!(!b.blob_exists(R, &d).await.unwrap(), "secondary should not");
     }
 
     #[tokio::test]

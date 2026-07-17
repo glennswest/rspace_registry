@@ -160,10 +160,7 @@ impl RepoRouter {
         let mut out: Vec<Arc<dyn Storage>> = Vec::new();
         for r in rules.iter() {
             let raw = Arc::as_ptr(&r.backend) as *const ();
-            if !out
-                .iter()
-                .any(|b| Arc::as_ptr(b) as *const () == raw)
-            {
+            if !out.iter().any(|b| Arc::as_ptr(b) as *const () == raw) {
                 out.push(r.backend.clone());
             }
         }
@@ -248,14 +245,12 @@ impl Storage for RepoRouter {
         reference: &Reference,
         content: &[u8],
     ) -> Result<Digest, StorageError> {
-        self.resolve(repo).manifest_put(repo, reference, content).await
+        self.resolve(repo)
+            .manifest_put(repo, reference, content)
+            .await
     }
 
-    async fn manifest_delete(
-        &self,
-        repo: &str,
-        reference: &Reference,
-    ) -> Result<(), StorageError> {
+    async fn manifest_delete(&self, repo: &str, reference: &Reference) -> Result<(), StorageError> {
         self.resolve(repo).manifest_delete(repo, reference).await
     }
 
@@ -331,13 +326,11 @@ mod tests {
         async fn blob_read(&self, _r: &str, _d: &Digest) -> Result<Vec<u8>, StorageError> {
             Err(StorageError::NotFound)
         }
-        async fn blob_write(
-            &self,
-            r: &str,
-            _d: &Digest,
-            _c: &[u8],
-        ) -> Result<(), StorageError> {
-            self.writes.lock().await.push(format!("{}:{}", self.name, r));
+        async fn blob_write(&self, r: &str, _d: &Digest, _c: &[u8]) -> Result<(), StorageError> {
+            self.writes
+                .lock()
+                .await
+                .push(format!("{}:{}", self.name, r));
             Ok(())
         }
         async fn blob_delete(&self, _r: &str, _d: &Digest) -> Result<(), StorageError> {
@@ -371,11 +364,7 @@ mod tests {
         async fn upload_cancel(&self, _r: &str, _id: Uuid) -> Result<(), StorageError> {
             Ok(())
         }
-        async fn manifest_get(
-            &self,
-            _r: &str,
-            _ref: &Reference,
-        ) -> Result<Vec<u8>, StorageError> {
+        async fn manifest_get(&self, _r: &str, _ref: &Reference) -> Result<Vec<u8>, StorageError> {
             Err(StorageError::NotFound)
         }
         async fn manifest_put(
@@ -384,7 +373,10 @@ mod tests {
             _ref: &Reference,
             _c: &[u8],
         ) -> Result<Digest, StorageError> {
-            self.writes.lock().await.push(format!("{}:{}", self.name, r));
+            self.writes
+                .lock()
+                .await
+                .push(format!("{}:{}", self.name, r));
             Ok(Digest {
                 algorithm: Algorithm::Sha256,
                 hex: "0".repeat(64),

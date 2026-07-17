@@ -18,6 +18,8 @@ path = "src/main.rs"
 [dependencies]
 rspace-registry-core = { path = "../rspace-registry-core" }
 rspace-registry-fs = { path = "../rspace-registry-fs" }
+# Used inside the lib so admin endpoints can mint a new backend when
+# repointing a route at runtime.
 
 axum.workspace = true
 tokio.workspace = true

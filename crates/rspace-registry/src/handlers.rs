@@ -11,8 +11,8 @@ use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rspace_registry_core::{
-    gc, parse_manifest_refs, replicate, Digest, MultiStore, Reference, ReplicateConfig, Storage,
-    StorageError, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
+    gc, parse_manifest_refs, replicate, Digest, MultiStore, Reference, ReplicateConfig, RepoRouter,
+    Storage, StorageError, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -690,6 +690,68 @@ pub async fn replicate_run(
         "bytes_copied": report.bytes_copied,
         "manifests_copied": report.manifests_copied,
         "duration_ms": report.duration_ms,
+    }))
+    .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Repo-router admin (only meaningful when RepoRouter is in use)
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/repo-roots` — list the current routing ruleset.
+pub async fn repo_roots_list(router: Arc<RepoRouter>) -> Result<Response, OciError> {
+    let rules = router.rules();
+    let out: Vec<_> = rules
+        .iter()
+        .map(|r| {
+            json!({
+                "pattern": r.pattern,
+                // We can't usefully show the backend's path without
+                // leaking implementation detail (it's behind a trait
+                // object). For now just confirm it's bound.
+                "bound": true,
+            })
+        })
+        .collect();
+    Ok(axum::Json(json!({ "rules": out })).into_response())
+}
+
+/// `POST /admin/repo-root` body: `{ "pattern": "...", "root": "/path" }`.
+///
+/// If a rule with `pattern` exists, its backend is repointed to the new
+/// root; otherwise the rule is appended. This is what `rspacefs-pvc`
+/// fires after a local mount pivot so the registry follows along without
+/// a restart.
+#[derive(serde::Deserialize)]
+pub struct RepoRootRequest {
+    pub pattern: String,
+    pub root: String,
+}
+
+pub async fn repo_root_upsert(
+    router: Arc<RepoRouter>,
+    body: RepoRootRequest,
+) -> Result<Response, OciError> {
+    if body.pattern.is_empty() {
+        return Err(
+            OciError::new(OciCode::BlobUploadInvalid, "pattern must be non-empty")
+                .with_status(StatusCode::BAD_REQUEST),
+        );
+    }
+    let storage = rspace_registry_fs::FsStorage::new(&body.root).map_err(|e| {
+        OciError::new(
+            OciCode::Unsupported,
+            format!("opening root {}: {e}", body.root),
+        )
+        .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+    let backend = Arc::new(storage) as Arc<dyn Storage>;
+    let added = router.upsert(body.pattern.clone(), backend);
+    Ok(axum::Json(json!({
+        "pattern": body.pattern,
+        "root": body.root,
+        "added": added,
+        "rule_count": router.rules().len(),
     }))
     .into_response())
 }

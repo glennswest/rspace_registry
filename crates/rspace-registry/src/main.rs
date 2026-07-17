@@ -8,7 +8,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use rspace_registry::{build_router, AppState};
-use rspace_registry_core::{gc, replicate, MultiStore, Partition, ReplicateConfig, Storage};
+use rspace_registry_core::{
+    gc, replicate, MultiStore, Partition, ReplicateConfig, RepoRouter, RouteRule, Storage,
+};
 use rspace_registry_fs::FsStorage;
 
 #[derive(Parser, Debug)]
@@ -47,6 +49,18 @@ struct Cli {
     #[arg(long, global = true)]
     replicate_tag_glob: Option<String>,
 
+    /// Per-repo storage placement: `pattern=/path` repeatable. Patterns
+    /// support `*` (any run) and `?` (one char); longest match wins.
+    /// Example:
+    ///   --repo-root 4.18.2/kernel=/mnt/fast/418-kernel
+    ///   --repo-root 4.18.2/*=/mnt/slow/418
+    ///   --repo-root *=/mnt/fast/default
+    /// When given, takes priority over `--data` / `--partition` as the
+    /// top-level Storage; a catchall (`*=`) rule is required if you
+    /// want unmapped repos to land somewhere.
+    #[arg(long = "repo-root", value_name = "pattern=/path", global = true)]
+    repo_roots: Vec<String>,
+
     /// Path to an htpasswd file. Without one the registry runs without
     /// auth — DO NOT do this in production.
     #[arg(long, global = true)]
@@ -78,58 +92,91 @@ enum Command {
     Replicate,
 }
 
-/// Result of resolving the CLI's storage flags. `multi` is `Some` when
-/// the operator declared more than one `--partition`; in that case the
-/// `Storage` handed to the router is the MultiStore (also stored in
-/// `multi` so admin endpoints can introspect it).
+/// Result of resolving the CLI's storage flags.
+///
+/// Precedence: `--repo-root` (one or more) > `--partition` (one or more) >
+/// `--data` (single root). `multi`/`router` are exposed when present so
+/// admin endpoints can introspect or repoint them.
 struct StorageSetup {
     storage: Arc<dyn Storage>,
     multi: Option<Arc<MultiStore>>,
+    router: Option<Arc<RepoRouter>>,
 }
 
 fn build_storage(cli: &Cli) -> Result<StorageSetup> {
-    if cli.partitions.is_empty() {
-        let s = Arc::new(
-            FsStorage::new(&cli.data)
-                .with_context(|| format!("opening data dir {}", cli.data.display()))?,
-        ) as Arc<dyn Storage>;
+    // ---- Repo-routed mode (highest precedence) -------------------------
+    if !cli.repo_roots.is_empty() {
+        let mut rules = Vec::with_capacity(cli.repo_roots.len());
+        for raw in &cli.repo_roots {
+            let (pattern, path) = raw
+                .split_once('=')
+                .ok_or_else(|| anyhow!("--repo-root {raw:?} must be pattern=/path"))?;
+            if pattern.is_empty() {
+                return Err(anyhow!("--repo-root {raw:?} has empty pattern"));
+            }
+            let backend = Arc::new(
+                FsStorage::new(path)
+                    .with_context(|| format!("opening repo root {pattern}={path}"))?,
+            ) as Arc<dyn Storage>;
+            rules.push(RouteRule {
+                pattern: pattern.to_string(),
+                backend,
+            });
+        }
+        let router = Arc::new(RepoRouter::new(rules)?);
         return Ok(StorageSetup {
-            storage: s,
+            storage: router.clone() as Arc<dyn Storage>,
             multi: None,
+            router: Some(router),
         });
     }
 
-    let mut parsed = Vec::with_capacity(cli.partitions.len());
-    for raw in &cli.partitions {
-        let (name, path) = raw
-            .split_once('=')
-            .ok_or_else(|| anyhow!("--partition {raw:?} must be name=/path"))?;
-        if name.is_empty() {
-            return Err(anyhow!("--partition {raw:?} has empty name"));
+    // ---- Multi-partition mode -----------------------------------------
+    if !cli.partitions.is_empty() {
+        let mut parsed = Vec::with_capacity(cli.partitions.len());
+        for raw in &cli.partitions {
+            let (name, path) = raw
+                .split_once('=')
+                .ok_or_else(|| anyhow!("--partition {raw:?} must be name=/path"))?;
+            if name.is_empty() {
+                return Err(anyhow!("--partition {raw:?} has empty name"));
+            }
+            let storage = Arc::new(
+                FsStorage::new(path).with_context(|| format!("opening partition {name}={path}"))?,
+            ) as Arc<dyn Storage>;
+            parsed.push(Partition {
+                name: name.to_string(),
+                storage,
+            });
         }
-        let storage = Arc::new(
-            FsStorage::new(path).with_context(|| format!("opening partition {name}={path}"))?,
-        ) as Arc<dyn Storage>;
-        parsed.push(Partition {
-            name: name.to_string(),
-            storage,
+
+        let primary = match (&cli.primary, parsed.len()) {
+            (Some(p), _) => p.clone(),
+            (None, 1) => parsed[0].name.clone(),
+            (None, _) => {
+                return Err(anyhow!(
+                    "--primary required when more than one --partition is declared"
+                ))
+            }
+        };
+
+        let multi = Arc::new(MultiStore::new(parsed, &primary)?);
+        return Ok(StorageSetup {
+            storage: multi.clone() as Arc<dyn Storage>,
+            multi: Some(multi),
+            router: None,
         });
     }
 
-    let primary = match (&cli.primary, parsed.len()) {
-        (Some(p), _) => p.clone(),
-        (None, 1) => parsed[0].name.clone(),
-        (None, _) => {
-            return Err(anyhow!(
-                "--primary required when more than one --partition is declared"
-            ))
-        }
-    };
-
-    let multi = Arc::new(MultiStore::new(parsed, &primary)?);
+    // ---- Default: single-root FsStorage --------------------------------
+    let s = Arc::new(
+        FsStorage::new(&cli.data)
+            .with_context(|| format!("opening data dir {}", cli.data.display()))?,
+    ) as Arc<dyn Storage>;
     Ok(StorageSetup {
-        storage: multi.clone() as Arc<dyn Storage>,
-        multi: Some(multi),
+        storage: s,
+        multi: None,
+        router: None,
     })
 }
 
@@ -208,6 +255,9 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
     let mut state = AppState::new(setup.storage.clone());
     if let Some(m) = &setup.multi {
         state = state.with_multi(m.clone());
+    }
+    if let Some(r) = &setup.router {
+        state = state.with_router(r.clone());
     }
     state.realm = cli.realm.clone();
 
