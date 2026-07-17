@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-07-17
+- **fix (registry):** Accept the spec-canonical trailing-slash form of upload start (`POST /v2/<name>/blobs/uploads/`), which podman/docker send; the bare form keeps working. Previously 404'd, breaking real client pushes.
+
 ### 2026-05-28
 - **BREAKING (core):** Thread `repo: &str` through every blob and upload op on the `Storage` trait (`blob_exists`/`size`/`read`/`write`/`delete`, `upload_create`/`status`/`append`/`finalize`/`cancel`). Enables per-repo storage routing (issue #1). Single-backend impls (`FsStorage`, `MultiStore` children) ignore the parameter.
 - **feat (registry):** Cross-repo blob mount (`POST /v2/<target>/blobs/uploads?mount=&from=`) now copies bytes between backends when source and target route to different storage roots.

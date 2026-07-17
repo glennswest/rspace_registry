@@ -427,3 +427,16 @@ async fn cross_repo_mount_returns_201_immediately() {
         digest
     );
 }
+
+/// The spec's canonical upload-start path has a trailing slash
+/// (`POST /v2/<name>/blobs/uploads/`) and that is what podman/docker
+/// actually send; the bare form must keep working too.
+#[tokio::test]
+async fn upload_start_accepts_trailing_slash() {
+    let (app, _tmp) = router();
+    for path in ["/v2/t/blobs/uploads/", "/v2/t/blobs/uploads"] {
+        let (status, headers, _) = send(&app, Method::POST, path, Some(vec![]), None).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "POST {path}");
+        assert!(headers.get("location").is_some(), "POST {path} location");
+    }
+}

@@ -203,9 +203,11 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
         };
     }
 
-    // /v2/<name>/blobs/uploads        (POST start)
+    // /v2/<name>/blobs/uploads        (POST start; spec canonical form has a
+    // trailing slash, which podman/docker send — accept both)
     // /v2/<name>/blobs/uploads/<uuid> (GET/PATCH/PUT/DELETE session)
-    if let Some(repo) = strip_suffix(rest, "/blobs/uploads") {
+    let upload_start = rest.strip_suffix('/').unwrap_or(rest);
+    if let Some(repo) = strip_suffix(upload_start, "/blobs/uploads") {
         return match method {
             Method::POST => {
                 let digest = query.get("digest").cloned();
