@@ -5,6 +5,7 @@
 pub mod digest;
 pub mod gc;
 pub mod manifest;
+pub mod migrate;
 pub mod multi;
 pub mod replicate;
 pub mod repo_router;
@@ -15,6 +16,7 @@ pub use manifest::{
     parse_manifest_refs, Descriptor, Manifest, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE,
     OCI_MANIFEST_MEDIA_TYPE,
 };
+pub use migrate::MigrateReport;
 pub use multi::{MultiStore, Partition};
 pub use replicate::{ReplicateConfig, ReplicateReport};
 pub use repo_router::{RepoRouter, RouteRule};

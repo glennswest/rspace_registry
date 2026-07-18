@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+## [v0.4.0] — 2026-07-18
+
+Live class migration between storage roots. `--repo-root` already places
+a class of repos (`system/*`, `microvm/*`, `data/*`, …) on a volume;
+this release lets you *move* a whole class to a different volume with no
+downtime — motivated by breaking apart system / partner / customer /
+microVM / data-volume content and relocating the bursty, non-dedupable
+classes off boot-critical storage.
+
+### Added
+
+- **`migrate::run(router, pattern, new_backend, drain)`** (`rspace-registry-core`)
+  — drain + cutover for a repo class:
+  1. **Copy pass** replicates every repo matching `pattern` (all tags,
+     manifest digests, and reachable blobs) from its current backend to a
+     fresh one, while the old backend keeps serving traffic.
+  2. **Cutover** atomically repoints the `pattern` rule at the new backend
+     (reuses `RepoRouter::upsert`).
+  3. **Catch-up pass** re-copies to pick up anything written to the old
+     backend during the copy window (idempotent, content-addressed).
+  4. **Drain (optional)** deletes the migrated repos' manifests from the
+     old backend and runs a GC pass so the orphaned blobs are swept and the
+     old volume's capacity is reclaimed.
+  A more-specific rule (e.g. `data/keep` alongside `data/*`) keeps its
+  repos pinned — only repos that actually resolve to the source backend
+  move.
+- **`POST /admin/repo-migrate`** — body
+  `{ "pattern": "data/*", "to": "/mnt/bulk2", "drain": false }`. Builds an
+  `FsStorage` at `to`, runs the migration, and returns a report
+  (`repos_migrated`, `blobs_copied`, `bytes_copied`, `manifests_copied`,
+  `blobs_purged`, `bytes_purged`, `cutover`, `duration_ms`).
+- **`RepoRouter::backend_for` / `backend_for_pattern`** — resolve a repo's
+  current backend / a rule's bound backend, so migration can identify the
+  source volume before cutover.
+- **Tests** — core drain+cutover, idempotent re-run, drain reclaims the old
+  volume, unknown-pattern error, more-specific-rule pinning; plus an HTTP
+  test driving `POST /admin/repo-migrate` end-to-end and confirming a pull
+  is served from the new volume after cutover.
+
+### Notes
+
+- Between cutover and the end of the catch-up pass there is a small
+  consistency window: a read for content written to the *old* backend
+  during the copy window but not yet re-copied can 404 briefly. It
+  self-heals when the catch-up pass completes; avoid migrating a class
+  under heavy fresh writes. Documented on `migrate`.
+- The migration runs synchronously inside the admin request; a very large
+  class blocks that one request until done. A background-job variant can
+  come later if needed.
+
 ## [v0.3.0] — 2026-07-17
 
 Cluster-delegated auth. The registry can now authenticate and authorize

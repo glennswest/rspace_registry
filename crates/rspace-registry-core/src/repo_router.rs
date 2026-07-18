@@ -117,6 +117,25 @@ impl RepoRouter {
         }
     }
 
+    /// Resolve a repo to the backend it currently routes to. Public
+    /// counterpart of the internal `resolve` — used by migration to learn
+    /// where a repo's bytes live today.
+    pub fn backend_for(&self, repo: &str) -> Arc<dyn Storage> {
+        self.resolve(repo)
+    }
+
+    /// The backend currently bound to the rule whose pattern is *exactly*
+    /// `pattern` (not a glob match — an identity match on the rule key).
+    /// `None` if no such rule exists. Used by migration to identify the
+    /// source volume for a class before cutover.
+    pub fn backend_for_pattern(&self, pattern: &str) -> Option<Arc<dyn Storage>> {
+        self.rules
+            .read()
+            .iter()
+            .find(|r| r.pattern == pattern)
+            .map(|r| r.backend.clone())
+    }
+
     /// Atomically replace the backend behind every rule whose `pattern`
     /// equals the given pattern (typically one). Returns the count of
     /// rules updated; 0 means no matching rule exists.

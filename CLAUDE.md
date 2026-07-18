@@ -108,7 +108,19 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.3.0` — cluster-delegated auth (`--auth k8s`)
+### Current Version: `v0.4.0` — live class migration between volumes
+
+Repo classes placed via `--repo-root` (system/partner/customer/microvm/
+data) can now be **moved to a different volume with no downtime**:
+`migrate::run` does copy pass → atomic cutover (`RepoRouter::upsert`) →
+catch-up pass → optional drain (delete old manifests + GC the old
+volume). Exposed as `POST /admin/repo-migrate { pattern, to, drain }`.
+Idempotent/restartable; more-specific rules stay pinned. Motivated by
+separating bursty, non-dedupable classes (data volumes, 1000s of
+microVMs) from boot-critical system images and relocating them onto
+their own volumes.
+
+### Prior Version: `v0.3.0` — cluster-delegated auth (`--auth k8s`)
 
 v0.2.0 surface intact. Adds a third auth mode, `--auth k8s`
 (issue #2): the registry holds no credentials, answers the Docker
@@ -181,6 +193,11 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-18: Live class migration (`migrate::run` +
+  `POST /admin/repo-migrate`) — move a `--repo-root` class between
+  volumes with no downtime: copy → cutover → catch-up → optional drain
+  (+GC). Idempotent; more-specific rules stay pinned. Added
+  `RepoRouter::backend_for`/`backend_for_pattern`.
 - 2026-07-17: `--auth k8s` cluster-delegated auth (issue #2, phases 1
   & 2) — Bearer challenge + TokenReview authn, SubjectAccessReview
   authz (pull→get / push→update / delete→delete / list→list /

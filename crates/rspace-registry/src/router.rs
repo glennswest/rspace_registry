@@ -199,6 +199,20 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                     };
                     return into_response(handlers::repo_root_upsert(router.clone(), req).await);
                 }
+                if path == "/admin/repo-migrate" && method == Method::POST {
+                    let req: handlers::RepoMigrateRequest = match serde_json::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return OciError::new(
+                                OciCode::BlobUploadInvalid,
+                                format!("bad repo-migrate body: {e}"),
+                            )
+                            .with_status(StatusCode::BAD_REQUEST)
+                            .into_response();
+                        }
+                    };
+                    return into_response(handlers::repo_migrate(router.clone(), req).await);
+                }
             }
         }
         return not_found();

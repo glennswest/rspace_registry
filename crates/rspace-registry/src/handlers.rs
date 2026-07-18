@@ -11,8 +11,9 @@ use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rspace_registry_core::{
-    gc, parse_manifest_refs, replicate, Digest, MultiStore, Reference, ReplicateConfig, RepoRouter,
-    Storage, StorageError, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE, OCI_MANIFEST_MEDIA_TYPE,
+    gc, migrate, parse_manifest_refs, replicate, Digest, MultiStore, Reference, ReplicateConfig,
+    RepoRouter, Storage, StorageError, MANIFEST_MEDIA_TYPES, OCI_INDEX_MEDIA_TYPE,
+    OCI_MANIFEST_MEDIA_TYPE,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -762,6 +763,56 @@ pub async fn repo_root_upsert(
         "root": body.root,
         "added": added,
         "rule_count": router.rules().len(),
+    }))
+    .into_response())
+}
+
+/// `POST /admin/repo-migrate` body:
+/// `{ "pattern": "data/*", "to": "/mnt/bulk2", "drain": false }`.
+///
+/// Live drain + cutover: copy every repo matching `pattern` from its
+/// current volume onto a fresh backend at `to`, atomically repoint the
+/// rule, then a catch-up copy. With `drain: true`, the old volume's
+/// content is deleted and GC'd afterwards so its capacity is reclaimed.
+#[derive(serde::Deserialize)]
+pub struct RepoMigrateRequest {
+    pub pattern: String,
+    pub to: String,
+    #[serde(default)]
+    pub drain: bool,
+}
+
+pub async fn repo_migrate(
+    router: Arc<RepoRouter>,
+    body: RepoMigrateRequest,
+) -> Result<Response, OciError> {
+    if body.pattern.is_empty() {
+        return Err(
+            OciError::new(OciCode::BlobUploadInvalid, "pattern must be non-empty")
+                .with_status(StatusCode::BAD_REQUEST),
+        );
+    }
+    let storage = rspace_registry_fs::FsStorage::new(&body.to).map_err(|e| {
+        OciError::new(
+            OciCode::Unsupported,
+            format!("opening root {}: {e}", body.to),
+        )
+        .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+    let new_backend = Arc::new(storage) as Arc<dyn Storage>;
+    let report = migrate::run(&router, &body.pattern, new_backend, body.drain).await?;
+    Ok(axum::Json(json!({
+        "pattern": body.pattern,
+        "to": body.to,
+        "drain": body.drain,
+        "cutover": report.cutover,
+        "repos_migrated": report.repos_migrated,
+        "blobs_copied": report.blobs_copied,
+        "bytes_copied": report.bytes_copied,
+        "manifests_copied": report.manifests_copied,
+        "blobs_purged": report.blobs_purged,
+        "bytes_purged": report.bytes_purged,
+        "duration_ms": report.duration_ms,
     }))
     .into_response())
 }

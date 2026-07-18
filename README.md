@@ -8,6 +8,22 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
+**v0.4.0 — live class migration between volumes.** Repo classes
+(`system/*`, `partner/*`, `customer/*`, `microvm/*`, `data/*`, …) are
+placed on volumes with `--repo-root`; you can now **move a whole class
+to a different volume with no downtime**:
+
+```bash
+# Relocate the bursty, non-dedupable data-volume class off boot-critical
+# storage — copy live, cut over, then reclaim the old volume.
+curl -X POST localhost:5000/admin/repo-migrate \
+  -d '{"pattern":"data/*","to":"/mnt/bulk2","drain":true}'
+```
+
+Copy pass → atomic cutover → catch-up pass → optional drain (delete +
+GC the old volume). Idempotent and restartable (content-addressed); a
+more-specific rule like `data/keep` stays pinned.
+
 **v0.3.0 — cluster-delegated auth (`--auth k8s`).** On top of the
 v0.2.0 surface (full OCI Distribution Spec v1.1 push/pull, htpasswd
 auth, TLS, mark-and-sweep GC, referrers, multi-partition + replication,
@@ -36,7 +52,8 @@ podman login -u unused -p "$(kubectl create token my-sa)" registry.example:5000
 Earlier: `MultiStore` composes N partitions with a background
 reconciler; `--repo-root pattern=/path` places repos on different
 mounts; `GET /admin/partitions`, `POST /admin/replicate`,
-`GET /admin/repo-roots`, `POST /admin/repo-root` admin endpoints.
+`GET /admin/repo-roots`, `POST /admin/repo-root`,
+`POST /admin/repo-migrate` admin endpoints.
 
 Active-partition pivot is handled by another component outside the
 registry. See [CLAUDE.md](./CLAUDE.md) for the full work plan.
