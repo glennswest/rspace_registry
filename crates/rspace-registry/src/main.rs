@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use rspace_registry::{build_router, AppState};
+use rspace_registry::k8s::{ApiReviewer, K8sAuth, K8sAuthConfig};
+use rspace_registry::{build_router, AppState, Auth};
 use rspace_registry_core::{
     gc, replicate, MultiStore, Partition, ReplicateConfig, RepoRouter, RouteRule, Storage,
 };
@@ -61,12 +62,49 @@ struct Cli {
     #[arg(long = "repo-root", value_name = "pattern=/path", global = true)]
     repo_roots: Vec<String>,
 
-    /// Path to an htpasswd file. Without one the registry runs without
-    /// auth — DO NOT do this in production.
+    /// Auth mode: `none` (default), `htpasswd`, or `k8s`. `htpasswd` is
+    /// implied when `--auth-file` is given. `k8s` delegates authn/authz to
+    /// the cluster (TokenReview + SubjectAccessReview).
+    #[arg(long, global = true)]
+    auth: Option<String>,
+
+    /// Path to an htpasswd file. Without one (and without `--auth k8s`) the
+    /// registry runs without auth — DO NOT do this in production.
     #[arg(long, global = true)]
     auth_file: Option<PathBuf>,
 
-    /// Realm to advertise in the `WWW-Authenticate` challenge.
+    /// `--auth k8s`: API server URL. Defaults to the in-cluster
+    /// `KUBERNETES_SERVICE_HOST`/`_PORT` env.
+    #[arg(long = "auth-k8s-api", value_name = "url", global = true)]
+    auth_k8s_api: Option<String>,
+
+    /// `--auth k8s`: SAR resource as `group/resource`. Default
+    /// `rspace.io/repositories`.
+    #[arg(
+        long = "auth-k8s-resource",
+        value_name = "group/res",
+        default_value = "rspace.io/repositories",
+        global = true
+    )]
+    auth_k8s_resource: String,
+
+    /// `--auth k8s`: namespace to authorize single-segment repos and the
+    /// catalog against. Unset rejects such requests.
+    #[arg(long = "auth-k8s-default-ns", value_name = "ns", global = true)]
+    auth_k8s_default_ns: Option<String>,
+
+    /// `--auth k8s`: TokenReview/SAR verdict cache TTL (e.g. `2m`).
+    #[arg(long = "auth-cache-ttl", default_value = "2m", global = true)]
+    auth_cache_ttl: String,
+
+    /// `--auth k8s`: skip auth for loopback (`127.0.0.1`/`::1`) clients — the
+    /// boot-order fast path so a node can serve preloaded images before the
+    /// API server exists.
+    #[arg(long = "auth-allow-loopback", global = true)]
+    auth_allow_loopback: bool,
+
+    /// Realm to advertise in the `WWW-Authenticate` challenge (htpasswd mode)
+    /// or as the `Bearer` token realm (k8s mode).
     #[arg(long, default_value = "rspace-registry", global = true)]
     realm: String,
 
@@ -251,6 +289,71 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Resolve the auth flags into an `Auth` mode (or `None` for no auth).
+///
+/// Precedence: an explicit `--auth <mode>` wins; otherwise `--auth-file`
+/// implies htpasswd; otherwise no auth (with a loud warning).
+fn build_auth(cli: &Cli) -> Result<Option<Auth>> {
+    let mode = cli.auth.as_deref().unwrap_or_else(|| {
+        if cli.auth_file.is_some() {
+            "htpasswd"
+        } else {
+            "none"
+        }
+    });
+
+    match mode {
+        "none" => {
+            tracing::warn!(
+                "no auth configured; registry is unauthenticated. NEVER do this in production."
+            );
+            Ok(None)
+        }
+        "htpasswd" => {
+            let path = cli
+                .auth_file
+                .as_ref()
+                .ok_or_else(|| anyhow!("--auth htpasswd requires --auth-file"))?;
+            let h = rspace_registry::auth::Htpasswd::load(path)
+                .with_context(|| format!("loading htpasswd from {}", path.display()))?;
+            tracing::info!(file = %path.display(), "auth enabled (htpasswd)");
+            Ok(Some(Auth::Htpasswd(Arc::new(h))))
+        }
+        "k8s" => {
+            let (group, resource) = cli
+                .auth_k8s_resource
+                .split_once('/')
+                .ok_or_else(|| anyhow!("--auth-k8s-resource must be group/resource"))?;
+            let cache_ttl = parse_duration(&cli.auth_cache_ttl)?;
+            let reviewer = ApiReviewer::in_cluster(cli.auth_k8s_api.as_deref())
+                .context("initialising Kubernetes API reviewer for --auth k8s")?;
+            let cfg = K8sAuthConfig {
+                resource_group: group.to_string(),
+                resource: resource.to_string(),
+                default_namespace: cli.auth_k8s_default_ns.clone(),
+                cache_ttl,
+                allow_loopback: cli.auth_allow_loopback,
+                token_realm: format!("{}/token", cli.realm),
+                service: "rspace-registry".to_string(),
+            };
+            tracing::info!(
+                resource = %cli.auth_k8s_resource,
+                default_ns = ?cli.auth_k8s_default_ns,
+                allow_loopback = cli.auth_allow_loopback,
+                cache_ttl_secs = cache_ttl.as_secs(),
+                "auth enabled (k8s: TokenReview + SubjectAccessReview)"
+            );
+            Ok(Some(Auth::K8s(Arc::new(K8sAuth::new(
+                cfg,
+                Box::new(reviewer),
+            )))))
+        }
+        other => Err(anyhow!(
+            "unknown --auth mode {other:?} (expected none|htpasswd|k8s)"
+        )),
+    }
+}
+
 async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
     let mut state = AppState::new(setup.storage.clone());
     if let Some(m) = &setup.multi {
@@ -260,20 +363,7 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
         state = state.with_router(r.clone());
     }
     state.realm = cli.realm.clone();
-
-    match &cli.auth_file {
-        Some(p) => {
-            let h = rspace_registry::auth::Htpasswd::load(p)
-                .with_context(|| format!("loading htpasswd from {}", p.display()))?;
-            state.auth = Some(Arc::new(h));
-            tracing::info!(file = %p.display(), "auth enabled (htpasswd)");
-        }
-        None => {
-            tracing::warn!(
-                "no --auth-file set; registry is unauthenticated. NEVER do this in production."
-            );
-        }
-    }
+    state.auth = build_auth(cli)?;
 
     let addr: SocketAddr = cli
         .listen
@@ -328,15 +418,18 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
                     )
                 })?;
             axum_server::bind_rustls(addr, tls)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .map_err(anyhow::Error::from)
         }
         (None, None) => {
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            axum::serve(listener, app)
-                .await
-                .map_err(anyhow::Error::from)
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .map_err(anyhow::Error::from)
         }
         _ => Err(anyhow!("--cert and --key must be provided together")),
     };

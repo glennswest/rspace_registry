@@ -8,17 +8,35 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
-**v0.2.0 — multi-partition + replication.** v0.1.0 surface (full OCI
-Distribution Spec v1.1 push/pull, htpasswd auth, TLS, mark-and-sweep
-GC, referrers) plus:
+**v0.3.0 — cluster-delegated auth (`--auth k8s`).** On top of the
+v0.2.0 surface (full OCI Distribution Spec v1.1 push/pull, htpasswd
+auth, TLS, mark-and-sweep GC, referrers, multi-partition + replication,
+per-repo storage roots):
 
-- `MultiStore` composes N partitions; reads fall through, writes go to
-  a fixed primary, deletes apply to all.
-- Background reconciler periodically copies primary → secondaries.
-  Optional shell-style tag glob (`--replicate-tag-glob 'prod-*'`).
-- `GET /admin/partitions`, `POST /admin/replicate` admin endpoints.
-- CLI: `--partition name=/path` (repeatable), `--primary <name>`,
-  `--replicate-interval <0|60s|5m|1h>`, `--replicate-tag-glob`.
+- **`--auth k8s`** — the registry holds no credentials. It answers the
+  Docker bearer-token challenge, validates presented Kubernetes tokens
+  via **TokenReview**, and authorizes each operation with a
+  **SubjectAccessReview** in the namespace matching the repo path
+  (`<namespace>/<name>[/...]`). RBAC decides who can pull/push where —
+  mirroring the built-in OpenShift registry.
+- Verdicts cached (`--auth-cache-ttl`, default `2m`) to keep API-server
+  overhead off the hot path.
+- **`--auth-allow-loopback`** — boot-order fast path so a node serves
+  preloaded images to CRI-O before the API server exists.
+
+```bash
+# Cluster-delegated auth (in a Pod with a mounted ServiceAccount):
+rspace-registry --listen 0.0.0.0:5000 --data /var/lib/rspace_registry \
+  --auth k8s --auth-k8s-default-ns default --auth-allow-loopback
+
+# A user/SA token is the credential; the username is ignored:
+podman login -u unused -p "$(kubectl create token my-sa)" registry.example:5000
+```
+
+Earlier: `MultiStore` composes N partitions with a background
+reconciler; `--repo-root pattern=/path` places repos on different
+mounts; `GET /admin/partitions`, `POST /admin/replicate`,
+`GET /admin/repo-roots`, `POST /admin/repo-root` admin endpoints.
 
 Active-partition pivot is handled by another component outside the
 registry. See [CLAUDE.md](./CLAUDE.md) for the full work plan.

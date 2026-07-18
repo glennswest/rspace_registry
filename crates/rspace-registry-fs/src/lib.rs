@@ -566,10 +566,13 @@ mod tests {
         let fs = FsStorage::new(&root).expect("read-only root must open");
         // Reads answer (empty), writes fail at operation time — not at open.
         assert!(!fs
-            .blob_exists("r", &"sha256:".to_string().parse().unwrap_or_else(|_| Digest {
-                algorithm: Algorithm::Sha256,
-                hex: "0".repeat(64),
-            }))
+            .blob_exists(
+                "r",
+                &"sha256:".to_string().parse().unwrap_or_else(|_| Digest {
+                    algorithm: Algorithm::Sha256,
+                    hex: "0".repeat(64),
+                })
+            )
             .await
             .unwrap());
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();

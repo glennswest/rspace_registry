@@ -6,10 +6,11 @@
 //! small state machine.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -21,6 +22,16 @@ use rspace_registry_core::{MultiStore, RepoRouter};
 use crate::auth::{self, Htpasswd};
 use crate::error::{OciCode, OciError};
 use crate::handlers::{self, SharedStorage};
+use crate::k8s::{self, K8sAuth};
+
+/// How the registry authenticates requests, when auth is enabled at all.
+#[derive(Clone)]
+pub enum Auth {
+    /// HTTP Basic against an htpasswd file.
+    Htpasswd(Arc<Htpasswd>),
+    /// Cluster-delegated: TokenReview + SubjectAccessReview (`--auth k8s`).
+    K8s(Arc<K8sAuth>),
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -31,7 +42,7 @@ pub struct AppState {
     /// When `storage` is a `RepoRouter`, expose admin endpoints
     /// (`GET /admin/repo-roots`, `POST /admin/repo-root`) backed by it.
     pub router: Option<Arc<RepoRouter>>,
-    pub auth: Option<Arc<Htpasswd>>,
+    pub auth: Option<Auth>,
     pub realm: String,
     /// When set, exposes `POST /admin/gc` as an authenticated trigger.
     pub admin_enabled: bool,
@@ -69,7 +80,7 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn require_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let Some(htpasswd) = state.auth.as_ref() else {
+    let Some(auth) = state.auth.as_ref() else {
         return next.run(req).await;
     };
     // Always allow GET /v2/ (the version check is unauthenticated by spec —
@@ -77,21 +88,36 @@ async fn require_auth(State(state): State<AppState>, req: Request, next: Next) -
     if req.method() == Method::GET && (req.uri().path() == "/v2/" || req.uri().path() == "/v2") {
         return next.run(req).await;
     }
-    match auth::parse_basic(req.headers()) {
-        Some((u, p)) if htpasswd.verify(&u, &p) => next.run(req).await,
-        _ => {
-            let err = OciError::new(OciCode::Unauthorized, "authentication required");
-            let mut resp = err.into_response();
-            let challenge = auth::challenge_headers(&state.realm);
-            for (k, v) in challenge {
-                if let Some(name) = k {
-                    resp.headers_mut().insert(name, v);
-                }
+    match auth {
+        Auth::Htpasswd(htpasswd) => match auth::parse_basic(req.headers()) {
+            Some((u, p)) if htpasswd.verify(&u, &p) => next.run(req).await,
+            _ => basic_challenge(&state.realm),
+        },
+        Auth::K8s(k8s_auth) => {
+            let op = k8s::classify(req.method(), req.uri().path());
+            let peer = req
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|c| c.0.ip());
+            match k8s_auth.check(&op, req.headers(), peer).await {
+                Ok(()) => next.run(req).await,
+                Err(reject) => reject.into_response(k8s_auth),
             }
-            *resp.status_mut() = auth::UNAUTH_STATUS;
-            resp
         }
     }
+}
+
+fn basic_challenge(realm: &str) -> Response {
+    let err = OciError::new(OciCode::Unauthorized, "authentication required");
+    let mut resp = err.into_response();
+    let challenge = auth::challenge_headers(realm);
+    for (k, v) in challenge {
+        if let Some(name) = k {
+            resp.headers_mut().insert(name, v);
+        }
+    }
+    *resp.status_mut() = auth::UNAUTH_STATUS;
+    resp
 }
 
 async fn dispatch(State(state): State<AppState>, req: Request) -> Response {

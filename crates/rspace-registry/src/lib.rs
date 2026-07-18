@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod error;
 pub mod handlers;
+pub mod k8s;
 pub mod router;
 
-pub use router::{build_router, AppState};
+pub use router::{build_router, AppState, Auth};

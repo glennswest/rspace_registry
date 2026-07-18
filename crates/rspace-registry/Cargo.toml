@@ -43,7 +43,12 @@ base64.workspace = true
 axum-server.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 tempfile.workspace = true
+async-trait.workspace = true
+base64.workspace = true

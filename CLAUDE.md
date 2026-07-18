@@ -108,7 +108,19 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.2.0` — multi-partition + replication
+### Current Version: `v0.3.0` — cluster-delegated auth (`--auth k8s`)
+
+v0.2.0 surface intact. Adds a third auth mode, `--auth k8s`
+(issue #2): the registry holds no credentials, answers the Docker
+bearer-token challenge, validates tokens via **TokenReview**, and
+authorizes each op via **SubjectAccessReview** in the namespace
+matching the repo path. Verdict cache (`--auth-cache-ttl`), loopback
+boot-order fast path (`--auth-allow-loopback`). All API-server calls
+sit behind a `Reviewer` trait (`ApiReviewer` = in-cluster HTTPS; fake
+in tests). Phase 3 (token-exchange endpoint + kubelet credential
+provider docs) is deferred.
+
+### Prior Version: `v0.2.0` — multi-partition + replication
 
 v0.1.0 surface still intact. Adds `MultiStore` adapter (Storage trait
 composed over N partitions; reads fall through, writes go to a fixed
@@ -169,6 +181,12 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-17: `--auth k8s` cluster-delegated auth (issue #2, phases 1
+  & 2) — Bearer challenge + TokenReview authn, SubjectAccessReview
+  authz (pull→get / push→update / delete→delete / list→list /
+  admin→update on `rspace.io/repositories`), verdict cache,
+  `--auth-allow-loopback` boot-order fast path. `Reviewer` trait seam
+  with real in-cluster `ApiReviewer` + fake for tests.
 - 2026-05-23: Full OCI Distribution Spec v1.1 HTTP service — version
   check, catalog, tags/list, manifest CRUD, blob CRUD, upload session
   lifecycle (POST/PATCH/PUT/GET/DELETE) incl. monolithic POST + cross-

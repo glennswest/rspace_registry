@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Glenn West"]
 license = "MIT"
@@ -18,6 +18,10 @@ rust-version = "1.75"
 # Crypto / auth
 bcrypt = "0.15"
 base64 = "0.22"
+
+# Outbound HTTPS to the Kubernetes API server (TokenReview / SAR).
+# rustls-tls to match our TLS stack; no OpenSSL system dep.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # TLS
 rustls = "0.23"

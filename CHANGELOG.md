@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+## [v0.3.0] — 2026-07-17
+
+Cluster-delegated auth. The registry can now authenticate and authorize
+against a Kubernetes cluster instead of a registry-local user database,
+mirroring the built-in OpenShift registry: it holds no credentials, it
+validates presented tokens, and RBAC decides who can pull/push where.
+
+### Added
+
+- **`--auth k8s`** (issue #2) — a third auth mode alongside `--auth-file`
+  (htpasswd) and no-auth. Unauthenticated requests get a Docker
+  distribution `WWW-Authenticate: Bearer realm="<realm>/token",service="rspace-registry"`
+  challenge. The presented credential is a Kubernetes token (user or
+  ServiceAccount); basic-auth username is ignored, so
+  `podman login -u anything -p $TOKEN` works, as does a direct
+  `Authorization: Bearer <token>`.
+- **Authentication via TokenReview** — tokens are validated against the
+  API server (`authentication.k8s.io/v1/tokenreviews`). Verdicts (positive
+  and negative) are cached for `--auth-cache-ttl` (default `2m`) to keep
+  per-blob overhead off the API server.
+- **Authorization via SubjectAccessReview** — the repo path maps to a
+  namespace (`<namespace>/<name>[/...]`) and each operation runs a SAR
+  (`authorization.k8s.io/v1/subjectaccessreviews`): pull→`get`,
+  push→`update`, delete→`delete`, catalog/tags→`list`, `/admin/*`→`update`,
+  against a configurable virtual resource (default `rspace.io/repositories`).
+  No CRD required — roles just reference the resource, like OpenShift's
+  `imagestreams/layers`.
+- **`--auth-allow-loopback`** — the boot-order fast path: requests from
+  `127.0.0.1`/`::1` skip auth entirely, so a stormcos node can serve
+  preloaded images to CRI-O **before** the API server exists.
+- **CLI** — `--auth <none|htpasswd|k8s>`, `--auth-k8s-api <url>`,
+  `--auth-k8s-resource <group/res>`, `--auth-k8s-default-ns <ns>`,
+  `--auth-cache-ttl <dur>`, `--auth-allow-loopback`. `--auth-file` still
+  implies htpasswd.
+- **Tests** — unit tests for token-flow, per-verb SAR, loopback fast path,
+  namespace resolution, and (method, path)→verb classification; HTTP-level
+  integration tests driving the middleware over a fake `Reviewer` (bearer
+  challenge, authn, authz, loopback).
+
+### Notes
+
+- All API-server interaction sits behind the `Reviewer` trait; the real
+  `ApiReviewer` reads the in-cluster ServiceAccount mount
+  (`/var/run/secrets/kubernetes.io/serviceaccount/`) and talks HTTPS with
+  the cluster CA. `--auth-k8s-api` overrides the API server URL for
+  out-of-cluster use.
+- Phase 3 of issue #2 (a token-exchange endpoint implementing the full
+  Docker distribution token server, plus kubelet credential-provider docs)
+  is not yet implemented — clients present the token directly today.
+
 ### 2026-07-17
 - **fix (registry):** Accept the spec-canonical trailing-slash form of upload start (`POST /v2/<name>/blobs/uploads/`), which podman/docker send; the bare form keeps working. Previously 404'd, breaking real client pushes.
 - **fix (registry):** Serve manifests with their embedded `mediaType` as Content-Type instead of always defaulting to OCI. A Docker v2s2 manifest served under an OCI Content-Type made podman reject pulls with "invalid mixed OCI image with Docker v2s2 config".

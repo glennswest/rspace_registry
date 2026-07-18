@@ -462,7 +462,8 @@ async fn docker_v2s2_manifest_served_with_docker_content_type() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     for method in [Method::GET, Method::HEAD] {
-        let (status, headers, _) = send(&app, method.clone(), "/v2/t/manifests/v1", None, None).await;
+        let (status, headers, _) =
+            send(&app, method.clone(), "/v2/t/manifests/v1", None, None).await;
         assert_eq!(status, StatusCode::OK, "{method} manifest");
         assert_eq!(
             headers.get("content-type").unwrap().to_str().unwrap(),
