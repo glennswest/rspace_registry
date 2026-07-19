@@ -133,6 +133,9 @@ impl From<StorageError> for OciError {
                 format!("digest mismatch: expected {expected}, got {got}"),
             ),
             StorageError::Invalid(m) => OciError::new(OciCode::BlobUploadInvalid, m),
+            StorageError::QuotaExceeded(m) => {
+                OciError::new(OciCode::Denied, m).with_status(StatusCode::PAYLOAD_TOO_LARGE)
+            }
             StorageError::Io(e) => OciError::new(OciCode::Unsupported, format!("io: {e}"))
                 .with_status(StatusCode::INTERNAL_SERVER_ERROR),
             StorageError::Internal(m) => OciError::new(OciCode::Unsupported, m)

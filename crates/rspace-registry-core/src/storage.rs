@@ -36,6 +36,8 @@ pub enum StorageError {
     DigestMismatch { expected: Digest, got: Digest },
     #[error("invalid argument: {0}")]
     Invalid(String),
+    #[error("quota exceeded: {0}")]
+    QuotaExceeded(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("internal: {0}")]
@@ -133,4 +135,17 @@ pub trait Storage: Send + Sync {
     /// For a router-style backend this is the union across all child
     /// backends, deduplicated.
     async fn list_all_blobs(&self) -> Result<Vec<Digest>, StorageError>;
+
+    /// Total bytes of blob content held by this backend. Used by quota
+    /// accounting. The default sums `blob_size` over `list_all_blobs`;
+    /// backends with a cheaper measure (e.g. a `statfs` on a dedicated
+    /// mount) should override. `repo` is passed empty because blobs are
+    /// content-addressed within a root, independent of repo.
+    async fn used_bytes(&self) -> Result<u64, StorageError> {
+        let mut total = 0u64;
+        for d in self.list_all_blobs().await? {
+            total += self.blob_size("", &d).await.unwrap_or(0);
+        }
+        Ok(total)
+    }
 }

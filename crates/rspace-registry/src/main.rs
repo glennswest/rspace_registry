@@ -12,7 +12,8 @@ use rspace_registry::router::RepoClass;
 use rspace_registry::{build_router, AppState, Auth};
 use rspace_registry_core::migrate;
 use rspace_registry_core::{
-    gc, replicate, MultiStore, Partition, ReplicateConfig, RepoRouter, RouteRule, Storage,
+    gc, replicate, MultiStore, Partition, Quota, QuotaStorage, ReplicateConfig, RepoRouter,
+    RouteRule, Storage,
 };
 use rspace_registry_fs::FsStorage;
 
@@ -74,6 +75,25 @@ struct Cli {
     ///   --repo-class data=/mnt/bulk
     #[arg(long = "repo-class", value_name = "name=/path", global = true)]
     repo_classes: Vec<String>,
+
+    /// Per-class storage quota: `pattern=<size>` repeatable, longest-match
+    /// wins. Size accepts a byte count or a binary-unit suffix
+    /// (`K`/`Ki`, `M`/`Mi`, `G`/`Gi`, `T`/`Ti`). Caps blob bytes on the
+    /// class's volume; over-quota pushes get `413`. Example:
+    ///   --quota 'data/*=500Gi'
+    ///   --quota 'customer/*=2Ti'
+    /// Only meaningful with a repo-routed layout (`--repo-root`/`--repo-class`).
+    #[arg(long = "quota", value_name = "pattern=size", global = true)]
+    quotas: Vec<String>,
+
+    /// Quota by class name: `name=<size>` — sugar for `--quota name/*=<size>`.
+    #[arg(long = "quota-class", value_name = "name=size", global = true)]
+    quota_classes: Vec<String>,
+
+    /// Usage-cache TTL for quota accounting (e.g. `30s`). Lower is more
+    /// accurate under bursts but rescans the volume more often.
+    #[arg(long = "quota-cache-ttl", default_value = "30s", global = true)]
+    quota_cache_ttl: String,
 
     /// Auth mode: `none` (default), `htpasswd`, or `k8s`. `htpasswd` is
     /// implied when `--auth-file` is given. `k8s` delegates authn/authz to
@@ -180,6 +200,7 @@ struct StorageSetup {
     storage: Arc<dyn Storage>,
     multi: Option<Arc<MultiStore>>,
     router: Option<Arc<RepoRouter>>,
+    quota: Option<Arc<QuotaStorage>>,
     classes: Vec<RepoClass>,
 }
 
@@ -236,10 +257,22 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             });
         }
         let router = Arc::new(RepoRouter::new(rules)?);
+
+        // Optional per-class quotas wrap the router as the top-level storage.
+        let quotas = parse_quotas(&cli.quotas, &cli.quota_classes)?;
+        let (storage, quota): (Arc<dyn Storage>, Option<Arc<QuotaStorage>>) = if quotas.is_empty() {
+            (router.clone() as Arc<dyn Storage>, None)
+        } else {
+            let ttl = parse_duration(&cli.quota_cache_ttl)?;
+            let qs = Arc::new(QuotaStorage::new(router.clone(), quotas, ttl));
+            (qs.clone() as Arc<dyn Storage>, Some(qs))
+        };
+
         return Ok(StorageSetup {
-            storage: router.clone() as Arc<dyn Storage>,
+            storage,
             multi: None,
             router: Some(router),
+            quota,
             classes,
         });
     }
@@ -278,6 +311,7 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             storage: multi.clone() as Arc<dyn Storage>,
             multi: Some(multi),
             router: None,
+            quota: None,
             classes: Vec::new(),
         });
     }
@@ -291,8 +325,59 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
         storage: s,
         multi: None,
         router: None,
+        quota: None,
         classes: Vec::new(),
     })
+}
+
+/// Parse a byte size: a plain count, or a binary-unit suffix
+/// (`K`/`Ki`, `M`/`Mi`, `G`/`Gi`, `T`/`Ti` — all powers of 1024).
+fn parse_size(s: &str) -> Result<u64> {
+    let s = s.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let n: u64 = num.parse().with_context(|| format!("invalid size {s:?}"))?;
+    let mult: u64 = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "ki" => 1 << 10,
+        "m" | "mi" => 1 << 20,
+        "g" | "gi" => 1 << 30,
+        "t" | "ti" => 1 << 40,
+        other => return Err(anyhow!("unknown size unit {other:?} in {s:?}")),
+    };
+    n.checked_mul(mult)
+        .ok_or_else(|| anyhow!("size {s:?} overflows u64"))
+}
+
+/// Build the quota list from `--quota pattern=size` and `--quota-class
+/// name=size` (the latter expands to `name/*=size`).
+fn parse_quotas(quotas: &[String], quota_classes: &[String]) -> Result<Vec<Quota>> {
+    let mut out = Vec::with_capacity(quotas.len() + quota_classes.len());
+    for raw in quota_classes {
+        let (name, size) = raw
+            .split_once('=')
+            .ok_or_else(|| anyhow!("--quota-class {raw:?} must be name=size"))?;
+        if name.is_empty() {
+            return Err(anyhow!("--quota-class {raw:?} has empty name"));
+        }
+        out.push(Quota {
+            pattern: format!("{name}/*"),
+            max_bytes: parse_size(size)?,
+        });
+    }
+    for raw in quotas {
+        let (pattern, size) = raw
+            .split_once('=')
+            .ok_or_else(|| anyhow!("--quota {raw:?} must be pattern=size"))?;
+        if pattern.is_empty() {
+            return Err(anyhow!("--quota {raw:?} has empty pattern"));
+        }
+        out.push(Quota {
+            pattern: pattern.to_string(),
+            max_bytes: parse_size(size)?,
+        });
+    }
+    Ok(out)
 }
 
 /// Parse durations like `0`, `60s`, `5m`, `1h`. Empty units (e.g. `60`)
@@ -485,6 +570,9 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
     }
     if !setup.classes.is_empty() {
         state = state.with_classes(setup.classes.clone());
+    }
+    if let Some(q) = &setup.quota {
+        state = state.with_quota(q.clone());
     }
     state.realm = cli.realm.clone();
     state.auth = build_auth(cli)?;

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [v0.7.0] — 2026-07-19
+
+Per-class storage quotas (issue #2 phase 4, first slice). Caps how much a
+repo class may consume on its volume, so the bursty, non-dedupable
+classes (data volumes, thousands of microVM instances) can't starve
+boot-critical `system` images sharing a node.
+
+### Added
+
+- **`QuotaStorage`** (`rspace-registry-core`) — a transparent `Storage`
+  decorator over a `RepoRouter`. Delegates every call, but on the write
+  paths (`blob_write`, `upload_finalize`) first checks the incoming bytes
+  against the matching quota. Enforcement is at the storage boundary, so no
+  handler needs to know about quotas. Idempotent re-pushes of an
+  already-present blob add no bytes and are never rejected.
+- **`Storage::used_bytes`** — new trait method (default sums `blob_size`
+  over `list_all_blobs`) measuring a backend's blob bytes; overridable by
+  backends with a cheaper measure (e.g. `statfs` on a dedicated mount).
+- **`StorageError::QuotaExceeded`** → HTTP **413 Payload Too Large** with a
+  `DENIED` OCI error envelope naming the class and limit.
+- **CLI** — `--quota <pattern>=<size>` (repeatable, longest-match wins) and
+  `--quota-class <name>=<size>` (sugar for `<name>/*=<size>`). Sizes accept
+  a byte count or a binary-unit suffix (`K`/`Ki`, `M`/`Mi`, `G`/`Gi`,
+  `T`/`Ti`). `--quota-cache-ttl` (default `30s`) tunes usage-scan cadence.
+- **`GET /admin/quotas`** — each quota's `pattern`, `max_bytes`,
+  `used_bytes`, and `used_pct`.
+- **Tests** — under/over-quota writes, idempotent re-push not rejected,
+  unmatched repos unlimited, usage report, and an HTTP push that 413s over
+  quota while a small one succeeds + admin reporting.
+
+### Notes
+
+- Accounting is **approximate**: a class's usage is its volume's blob
+  bytes, cached with a short TTL and nudged upward on each accepted write.
+  A small overshoot is possible under heavy concurrency — the same
+  trade-off Quay makes. Lower `--quota-cache-ttl` tightens it at the cost
+  of more volume scans.
+- Quotas require a repo-routed layout (`--repo-root`/`--repo-class`); they
+  wrap the router as the top-level storage.
+
 ## [v0.6.0] — 2026-07-19
 
 Completes phase 3 of the `--auth k8s` model (issue #2): the Docker

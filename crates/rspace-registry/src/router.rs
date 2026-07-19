@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
-use rspace_registry_core::{MultiStore, RepoRouter};
+use rspace_registry_core::{MultiStore, QuotaStorage, RepoRouter};
 
 use crate::auth::{self, Htpasswd};
 use crate::error::{OciCode, OciError};
@@ -42,6 +42,8 @@ pub struct AppState {
     /// When `storage` is a `RepoRouter`, expose admin endpoints
     /// (`GET /admin/repo-roots`, `POST /admin/repo-root`) backed by it.
     pub router: Option<Arc<RepoRouter>>,
+    /// When a `QuotaStorage` wraps the router, expose `GET /admin/quotas`.
+    pub quota: Option<Arc<QuotaStorage>>,
     pub auth: Option<Auth>,
     pub realm: String,
     /// When set, exposes `POST /admin/gc` as an authenticated trigger.
@@ -69,6 +71,7 @@ impl AppState {
             storage,
             multi: None,
             router: None,
+            quota: None,
             auth: None,
             realm: "rspace-registry".to_string(),
             admin_enabled: true,
@@ -84,6 +87,11 @@ impl AppState {
 
     pub fn with_router(mut self, router: Arc<RepoRouter>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    pub fn with_quota(mut self, quota: Arc<QuotaStorage>) -> Self {
+        self.quota = Some(quota);
         self
     }
 
@@ -207,6 +215,12 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                 if !id.is_empty() && (method == Method::GET || method == Method::HEAD) {
                     return into_response(handlers::job_get(state.jobs.clone(), id).await);
                 }
+            }
+            if path == "/admin/quotas" && (method == Method::GET || method == Method::HEAD) {
+                if let Some(quota) = state.quota.as_ref() {
+                    return into_response(handlers::quotas_list(quota.clone()).await);
+                }
+                return not_found();
             }
             if let Some(multi) = state.multi.as_ref() {
                 if path == "/admin/partitions" && (method == Method::GET || method == Method::HEAD)

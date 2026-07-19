@@ -108,7 +108,17 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.6.0` — k8s token-exchange endpoint
+### Current Version: `v0.7.0` — per-class storage quotas
+
+Issue #2 phase 4 (first slice). `QuotaStorage` decorates the RepoRouter
+and caps blob bytes per class on the write path (`blob_write`,
+`upload_finalize`); over-quota → 413. `Storage::used_bytes` measures a
+backend (default sums blob sizes; overridable). CLI `--quota
+pattern=size` / `--quota-class name=size` (K/Ki…T/Ti), `GET
+/admin/quotas`. Accounting is approximate (cached usage,
+`--quota-cache-ttl`). Remaining phase 4: Repository CRD, robot accounts.
+
+### Prior Version: `v0.6.0` — k8s token-exchange endpoint
 
 Completes issue #2 phase 3: `GET /token` (the Docker distribution token
 server the Bearer challenge points at). Authenticates the presented k8s
@@ -212,6 +222,9 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-19: Per-class storage quotas (v0.7.0) — `QuotaStorage`
+  decorator over RepoRouter, enforces max-bytes/class on write →413,
+  `Storage::used_bytes`, `--quota`/`--quota-class`, `GET /admin/quotas`.
 - 2026-07-19: `--auth k8s` phase 3 (v0.6.0) — `GET /token`
   distribution token-exchange endpoint (`k8s::token_endpoint`),
   `--auth-k8s-token-url` realm, scope parsing (informational), full

@@ -899,3 +899,30 @@ pub async fn repo_classes_list(
 ) -> Result<Response, OciError> {
     Ok(axum::Json(json!({ "classes": classes })).into_response())
 }
+
+// ---------------------------------------------------------------------------
+// Storage quotas
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/quotas` — per-class limit + current usage.
+pub async fn quotas_list(
+    quota: Arc<rspace_registry_core::QuotaStorage>,
+) -> Result<Response, OciError> {
+    let report = quota.report().await;
+    let out: Vec<_> = report
+        .iter()
+        .map(|q| {
+            let pct = q
+                .used_bytes
+                .filter(|_| q.max_bytes > 0)
+                .map(|u| (u as f64 / q.max_bytes as f64 * 100.0).round() as u64);
+            json!({
+                "pattern": q.pattern,
+                "max_bytes": q.max_bytes,
+                "used_bytes": q.used_bytes,
+                "used_pct": pct,
+            })
+        })
+        .collect();
+    Ok(axum::Json(json!({ "quotas": out })).into_response())
+}

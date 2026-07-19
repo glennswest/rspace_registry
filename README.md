@@ -8,6 +8,20 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
+**v0.7.0 — per-class storage quotas.** Cap how much each class may
+consume on its volume, so the bursty `data`/`microvm` classes can't
+starve boot-critical `system`:
+
+```bash
+rspace-registry --repo-class data=/mnt/bulk --quota-class data=500Gi \
+                --repo-class customer=/mnt/cust --quota 'customer/*=2Ti'
+# Over-quota pushes get 413; usage is visible at:
+curl localhost:5000/admin/quotas
+```
+
+`QuotaStorage` wraps the router and enforces on the write path; usage is
+the volume's blob bytes (cached, approximate — the Quay trade-off).
+
 **v0.6.0 — k8s token-exchange endpoint.** `--auth k8s` now serves the
 `GET /token` endpoint its `Bearer` challenge advertises, so clients that
 follow the full distribution token flow (e.g. `podman login`) work, not
@@ -70,7 +84,7 @@ Earlier: cluster-delegated auth (`--auth k8s`, TokenReview + SAR);
 endpoints: `GET /admin/partitions`, `POST /admin/replicate`,
 `GET /admin/repo-roots`, `POST /admin/repo-root`,
 `POST /admin/repo-migrate`, `GET /admin/repo-classes`,
-`GET /admin/jobs[/<id>]`, `POST /admin/gc`.
+`GET /admin/quotas`, `GET /admin/jobs[/<id>]`, `POST /admin/gc`.
 
 Active-partition pivot is handled by another component outside the
 registry. See [CLAUDE.md](./CLAUDE.md) for the full work plan.

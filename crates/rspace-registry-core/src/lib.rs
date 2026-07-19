@@ -7,6 +7,7 @@ pub mod gc;
 pub mod manifest;
 pub mod migrate;
 pub mod multi;
+pub mod quota;
 pub mod replicate;
 pub mod repo_router;
 pub mod storage;
@@ -18,6 +19,7 @@ pub use manifest::{
 };
 pub use migrate::MigrateReport;
 pub use multi::{MultiStore, Partition};
+pub use quota::{Quota, QuotaStatus, QuotaStorage};
 pub use replicate::{ReplicateConfig, ReplicateReport};
 pub use repo_router::{RepoRouter, RouteRule};
 pub use storage::{Reference, Storage, StorageError, UploadStatus};
