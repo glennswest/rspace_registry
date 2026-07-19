@@ -8,7 +8,9 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use rspace_registry::k8s::{ApiReviewer, K8sAuth, K8sAuthConfig};
+use rspace_registry::router::RepoClass;
 use rspace_registry::{build_router, AppState, Auth};
+use rspace_registry_core::migrate;
 use rspace_registry_core::{
     gc, replicate, MultiStore, Partition, ReplicateConfig, RepoRouter, RouteRule, Storage,
 };
@@ -61,6 +63,17 @@ struct Cli {
     /// want unmapped repos to land somewhere.
     #[arg(long = "repo-root", value_name = "pattern=/path", global = true)]
     repo_roots: Vec<String>,
+
+    /// Named repo class: `name=/path` repeatable. Readable sugar for a
+    /// `--repo-root name/*=/path` rule — declare `system`, `partner`,
+    /// `customer`, `microvm`, `data`, … each on its own volume. Composes
+    /// with `--repo-root` (longest-match still wins, so a more specific
+    /// `--repo-root name/keep=/x` overrides the class). Example:
+    ///   --repo-class system=/mnt/system
+    ///   --repo-class microvm=/mnt/nvme
+    ///   --repo-class data=/mnt/bulk
+    #[arg(long = "repo-class", value_name = "name=/path", global = true)]
+    repo_classes: Vec<String>,
 
     /// Auth mode: `none` (default), `htpasswd`, or `k8s`. `htpasswd` is
     /// implied when `--auth-file` is given. `k8s` delegates authn/authz to
@@ -128,6 +141,26 @@ enum Command {
     /// One-shot replication pass from primary to all secondaries,
     /// then exit. Requires `--partition` flags.
     Replicate,
+    /// Offline one-shot class/pattern migration between volumes, then
+    /// exit. Build the CURRENT layout with `--repo-root`/`--repo-class`,
+    /// give the destination with `--to`; after it completes, update that
+    /// flag to point the class at `--to` for subsequent runs. Requires a
+    /// repo-routed layout.
+    Migrate {
+        /// Exact route pattern to migrate (e.g. `data/*`). Mutually
+        /// exclusive with `--class`.
+        #[arg(long)]
+        pattern: Option<String>,
+        /// Named class to migrate; expands to `<class>/*`.
+        #[arg(long)]
+        class: Option<String>,
+        /// Destination volume path.
+        #[arg(long)]
+        to: PathBuf,
+        /// Delete + GC the old volume after cutover.
+        #[arg(long)]
+        drain: bool,
+    },
 }
 
 /// Result of resolving the CLI's storage flags.
@@ -139,12 +172,45 @@ struct StorageSetup {
     storage: Arc<dyn Storage>,
     multi: Option<Arc<MultiStore>>,
     router: Option<Arc<RepoRouter>>,
+    classes: Vec<RepoClass>,
 }
 
 fn build_storage(cli: &Cli) -> Result<StorageSetup> {
     // ---- Repo-routed mode (highest precedence) -------------------------
-    if !cli.repo_roots.is_empty() {
-        let mut rules = Vec::with_capacity(cli.repo_roots.len());
+    // Both `--repo-root pattern=/path` and `--repo-class name=/path` (sugar
+    // for `name/*=/path`) contribute route rules to one RepoRouter.
+    if !cli.repo_roots.is_empty() || !cli.repo_classes.is_empty() {
+        let mut rules = Vec::with_capacity(cli.repo_roots.len() + cli.repo_classes.len());
+        let mut classes = Vec::with_capacity(cli.repo_classes.len());
+
+        for raw in &cli.repo_classes {
+            let (name, path) = raw
+                .split_once('=')
+                .ok_or_else(|| anyhow!("--repo-class {raw:?} must be name=/path"))?;
+            if name.is_empty() {
+                return Err(anyhow!("--repo-class {raw:?} has empty name"));
+            }
+            if name.contains('/') || name.contains('*') {
+                return Err(anyhow!(
+                    "--repo-class name {name:?} must be a bare class name (no '/' or '*')"
+                ));
+            }
+            let pattern = format!("{name}/*");
+            let backend = Arc::new(
+                FsStorage::new(path)
+                    .with_context(|| format!("opening repo class {name}={path}"))?,
+            ) as Arc<dyn Storage>;
+            rules.push(RouteRule {
+                pattern: pattern.clone(),
+                backend,
+            });
+            classes.push(RepoClass {
+                name: name.to_string(),
+                pattern,
+                root: path.to_string(),
+            });
+        }
+
         for raw in &cli.repo_roots {
             let (pattern, path) = raw
                 .split_once('=')
@@ -166,6 +232,7 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             storage: router.clone() as Arc<dyn Storage>,
             multi: None,
             router: Some(router),
+            classes,
         });
     }
 
@@ -203,6 +270,7 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
             storage: multi.clone() as Arc<dyn Storage>,
             multi: Some(multi),
             router: None,
+            classes: Vec::new(),
         });
     }
 
@@ -215,6 +283,7 @@ fn build_storage(cli: &Cli) -> Result<StorageSetup> {
         storage: s,
         multi: None,
         router: None,
+        classes: Vec::new(),
     })
 }
 
@@ -284,6 +353,46 @@ async fn main() -> Result<()> {
                 report.manifests_copied,
                 report.duration_ms
             );
+            Ok(())
+        }
+        Command::Migrate {
+            pattern,
+            class,
+            to,
+            drain,
+        } => {
+            let router = setup.router.ok_or_else(|| {
+                anyhow!("`migrate` requires a repo-routed layout (--repo-root / --repo-class)")
+            })?;
+            let pattern = match (pattern, class) {
+                (Some(p), _) if !p.is_empty() => p,
+                (_, Some(c)) if !c.is_empty() => format!("{c}/*"),
+                _ => return Err(anyhow!("`migrate` requires --pattern or --class")),
+            };
+            let new_backend = Arc::new(
+                FsStorage::new(&to)
+                    .with_context(|| format!("opening destination {}", to.display()))?,
+            ) as Arc<dyn Storage>;
+            let report = migrate::run(&router, &pattern, new_backend, drain).await?;
+            println!(
+                "migrate: pattern {pattern:?} -> {} | {} repos, {} blobs ({} bytes), {} manifests copied; purged {} blobs ({} bytes); cutover={} in {} ms",
+                to.display(),
+                report.repos_migrated,
+                report.blobs_copied,
+                report.bytes_copied,
+                report.manifests_copied,
+                report.blobs_purged,
+                report.bytes_purged,
+                report.cutover,
+                report.duration_ms,
+            );
+            if drain {
+                println!(
+                    "note: bytes moved and old volume drained. Update your --repo-{} flag to point {pattern:?} at {} for the next run.",
+                    if pattern.ends_with("/*") { "class/--repo-root" } else { "root" },
+                    to.display(),
+                );
+            }
             Ok(())
         }
     }
@@ -361,6 +470,9 @@ async fn serve(cli: &Cli, setup: StorageSetup) -> Result<()> {
     }
     if let Some(r) = &setup.router {
         state = state.with_router(r.clone());
+    }
+    if !setup.classes.is_empty() {
+        state = state.with_classes(setup.classes.clone());
     }
     state.realm = cli.realm.clone();
     state.auth = build_auth(cli)?;

@@ -768,43 +768,41 @@ pub async fn repo_root_upsert(
 }
 
 /// `POST /admin/repo-migrate` body:
-/// `{ "pattern": "data/*", "to": "/mnt/bulk2", "drain": false }`.
+/// `{ "pattern": "data/*" | "class": "data", "to": "/mnt/bulk2",
+///    "drain": false, "async": false }`.
 ///
-/// Live drain + cutover: copy every repo matching `pattern` from its
-/// current volume onto a fresh backend at `to`, atomically repoint the
-/// rule, then a catch-up copy. With `drain: true`, the old volume's
-/// content is deleted and GC'd afterwards so its capacity is reclaimed.
+/// Zero-miss live migration: overlay-cutover the rule (new primary + old
+/// fallback), backfill old → new, then collapse onto the new volume. With
+/// `drain: true`, the old volume's content is deleted and GC'd afterwards
+/// so its capacity is reclaimed. With `async: true`, the migration runs in
+/// the background and the response returns a job id to poll at
+/// `GET /admin/jobs/<id>`.
 #[derive(serde::Deserialize)]
 pub struct RepoMigrateRequest {
-    pub pattern: String,
+    /// Exact route pattern to migrate (e.g. `data/*`). Mutually exclusive
+    /// with `class`.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Named class to migrate; expands to the `<class>/*` pattern.
+    #[serde(default)]
+    pub class: Option<String>,
     pub to: String,
     #[serde(default)]
     pub drain: bool,
+    #[serde(default, rename = "async")]
+    pub background: bool,
 }
 
-pub async fn repo_migrate(
-    router: Arc<RepoRouter>,
-    body: RepoMigrateRequest,
-) -> Result<Response, OciError> {
-    if body.pattern.is_empty() {
-        return Err(
-            OciError::new(OciCode::BlobUploadInvalid, "pattern must be non-empty")
-                .with_status(StatusCode::BAD_REQUEST),
-        );
-    }
-    let storage = rspace_registry_fs::FsStorage::new(&body.to).map_err(|e| {
-        OciError::new(
-            OciCode::Unsupported,
-            format!("opening root {}: {e}", body.to),
-        )
-        .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-    })?;
-    let new_backend = Arc::new(storage) as Arc<dyn Storage>;
-    let report = migrate::run(&router, &body.pattern, new_backend, body.drain).await?;
-    Ok(axum::Json(json!({
-        "pattern": body.pattern,
-        "to": body.to,
-        "drain": body.drain,
+fn migrate_report_json(
+    pattern: &str,
+    to: &str,
+    drain: bool,
+    report: &rspace_registry_core::MigrateReport,
+) -> serde_json::Value {
+    json!({
+        "pattern": pattern,
+        "to": to,
+        "drain": drain,
         "cutover": report.cutover,
         "repos_migrated": report.repos_migrated,
         "blobs_copied": report.blobs_copied,
@@ -813,6 +811,91 @@ pub async fn repo_migrate(
         "blobs_purged": report.blobs_purged,
         "bytes_purged": report.bytes_purged,
         "duration_ms": report.duration_ms,
-    }))
-    .into_response())
+    })
+}
+
+pub async fn repo_migrate(
+    router: Arc<RepoRouter>,
+    jobs: crate::jobs::Jobs,
+    body: RepoMigrateRequest,
+) -> Result<Response, OciError> {
+    let pattern = match (body.pattern.as_deref(), body.class.as_deref()) {
+        (Some(p), _) if !p.is_empty() => p.to_string(),
+        (_, Some(c)) if !c.is_empty() => format!("{c}/*"),
+        _ => {
+            return Err(OciError::new(
+                OciCode::BlobUploadInvalid,
+                "one of non-empty `pattern` or `class` is required",
+            )
+            .with_status(StatusCode::BAD_REQUEST))
+        }
+    };
+    // Build the destination backend synchronously so a bad path fails the
+    // request up front rather than a background job.
+    let storage = rspace_registry_fs::FsStorage::new(&body.to).map_err(|e| {
+        OciError::new(
+            OciCode::Unsupported,
+            format!("opening root {}: {e}", body.to),
+        )
+        .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+    let new_backend = Arc::new(storage) as Arc<dyn Storage>;
+
+    if body.background {
+        let params = json!({ "pattern": pattern, "to": body.to, "drain": body.drain });
+        let id = jobs.start("repo-migrate", params);
+        let (jobs2, router2, pattern2, to2, drain) = (
+            jobs.clone(),
+            router.clone(),
+            pattern.clone(),
+            body.to.clone(),
+            body.drain,
+        );
+        let job_id = id.clone();
+        tokio::spawn(async move {
+            match migrate::run(&router2, &pattern2, new_backend, drain).await {
+                Ok(report) => jobs2.finish(
+                    &job_id,
+                    migrate_report_json(&pattern2, &to2, drain, &report),
+                ),
+                Err(e) => jobs2.fail(&job_id, e.to_string()),
+            }
+        });
+        return Ok((
+            StatusCode::ACCEPTED,
+            axum::Json(json!({ "job_id": id, "state": "running", "pattern": pattern })),
+        )
+            .into_response());
+    }
+
+    let report = migrate::run(&router, &pattern, new_backend, body.drain).await?;
+    Ok(axum::Json(migrate_report_json(&pattern, &body.to, body.drain, &report)).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Async job status
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/jobs` — list all background admin jobs.
+pub async fn jobs_list(jobs: crate::jobs::Jobs) -> Result<Response, OciError> {
+    Ok(axum::Json(json!({ "jobs": jobs.list() })).into_response())
+}
+
+/// `GET /admin/jobs/<id>` — one job, 404 if unknown.
+pub async fn job_get(jobs: crate::jobs::Jobs, id: &str) -> Result<Response, OciError> {
+    match jobs.get(id) {
+        Some(rec) => Ok(axum::Json(rec).into_response()),
+        None => Err(OciError::new(OciCode::NameUnknown, "job not found")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Named repo classes
+// ---------------------------------------------------------------------------
+
+/// `GET /admin/repo-classes` — list declared classes and their volumes.
+pub async fn repo_classes_list(
+    classes: Vec<crate::router::RepoClass>,
+) -> Result<Response, OciError> {
+    Ok(axum::Json(json!({ "classes": classes })).into_response())
 }

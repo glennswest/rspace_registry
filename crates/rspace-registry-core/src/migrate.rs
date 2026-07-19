@@ -1,34 +1,37 @@
-//! Live repo/class migration between storage roots — drain + cutover.
+//! Live repo/class migration between storage roots — zero-miss cutover.
 //!
 //! `--repo-root` places a class of repos (`system/*`, `microvm/*`,
 //! `data/*`, …) on a volume. `repoint`/`upsert` change where *new* writes
 //! land but leave existing bytes stranded on the old volume. This module
 //! *moves* the bytes so a whole class can be relocated to a different
-//! volume with no downtime:
+//! volume with no downtime **and no read-miss window**:
 //!
-//! 1. **Copy pass** — replicate every matching repo's content (tags, all
-//!    manifest digests, every reachable blob) from the old backend to the
-//!    new one. Reads and writes keep flowing to the old backend the whole
-//!    time — the route hasn't changed yet.
-//! 2. **Cutover** — atomically repoint the rule to the new backend. New
-//!    writes now land on the new volume.
-//! 3. **Catch-up pass** — copy again. Anything written to the old backend
-//!    during the copy window (before cutover) is now pulled across.
+//! 1. **Overlay cutover** — repoint the rule at a [`MultiStore`] whose
+//!    primary is the new backend and whose fallback is the old one. New
+//!    writes immediately land on the new volume; reads resolve new-first
+//!    and fall back to old, so nothing is ever unreachable — even before a
+//!    single byte is copied.
+//! 2. **Backfill** — copy every matching repo's content (tags, all manifest
+//!    digests, every reachable blob) old → new. Since no new writes reach
+//!    the old volume after step 1, one idempotent pass suffices.
+//! 3. **Collapse** — repoint the rule straight at the new backend, dropping
+//!    the old volume from the read path.
 //! 4. **Drain (optional)** — delete the migrated repos' manifests from the
 //!    old backend, then GC it so the now-unreferenced blobs are swept and
 //!    the old volume's capacity is reclaimed.
 //!
-//! Everything is content-addressed, so every pass is idempotent and the
-//! whole operation is restartable.
+//! Everything is content-addressed, so the backfill is idempotent and the
+//! whole operation is restartable. If the backfill fails, the route is
+//! left on the overlay — a correct serving state (the union of both
+//! volumes) — so a failure never loses reachability.
 //!
-//! ## Consistency window
+//! ## In-flight uploads
 //!
-//! Between cutover and the end of the catch-up pass, a read for content
-//! that was written to the *old* backend during the copy window but not
-//! yet re-copied resolves to the new backend and can 404 briefly. For the
-//! write-once workloads this targets (data volumes, microVM images) that
-//! window is small and self-heals when the catch-up pass completes. Avoid
-//! migrating a class while it is taking heavy fresh writes.
+//! An upload session started on the old volume before the overlay cutover
+//! is backend-local; a later `PATCH`/`PUT` for it routes to the new
+//! primary and won't find the session. Callers retry the upload, which
+//! then lands on the new volume. Manifests and finished blobs are
+//! unaffected.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -36,6 +39,7 @@ use std::sync::Arc;
 use crate::digest::{Algorithm, Digest};
 use crate::gc;
 use crate::manifest::parse_manifest_refs;
+use crate::multi::{MultiStore, Partition};
 use crate::replicate::glob_match;
 use crate::repo_router::RepoRouter;
 use crate::storage::{Reference, Storage, StorageError};
@@ -55,12 +59,31 @@ pub struct MigrateReport {
     pub cutover: bool,
 }
 
-/// Migrate every repo matching `pattern` from its current backend onto
-/// `new_backend`, then repoint the `pattern` rule at it. When `drain` is
-/// set, reclaim the old volume afterwards.
+/// Migrate every repo matching `pattern` from its current volume onto
+/// `new_backend`, with **zero-miss reads** throughout, then collapse the
+/// route onto the new volume. When `drain` is set, reclaim the old volume
+/// afterwards.
 ///
 /// `pattern` must be the exact key of an existing route rule (e.g.
 /// `"data/*"`). Returns `Invalid` if no such rule exists.
+///
+/// ## Ordering — why reads never miss
+///
+/// 1. **Overlay cutover** — repoint the rule at a [`MultiStore`] whose
+///    *primary* is the new backend and whose *fallback* is the old one.
+///    From this instant, new writes land on the new volume, while reads
+///    resolve new-first and fall back to old — so nothing is ever
+///    unreachable, even before a single byte has been copied.
+/// 2. **Backfill** — copy every matching repo old → new. Because no new
+///    writes reach the old volume after step 1, one pass is sufficient and
+///    idempotent.
+/// 3. **Collapse** — repoint the rule straight at the new backend, dropping
+///    the old volume from the read path.
+///
+/// If the backfill fails, the route is left on the overlay — a fully
+/// correct serving state (the union of both volumes). Re-running the
+/// migration, or a manual `repo-root` collapse once the cause is fixed,
+/// recovers it; nothing is lost.
 pub async fn run(
     router: &RepoRouter,
     pattern: &str,
@@ -91,19 +114,31 @@ pub async fn run(
         .collect();
     report.repos_migrated = repos.len();
 
-    // Pass 1 — bulk copy while the old backend still serves traffic.
+    // 1. Overlay cutover — reads new-first, fall back to old; writes → new.
+    let overlay = Arc::new(MultiStore::new(
+        vec![
+            Partition {
+                name: "new".into(),
+                storage: new_backend.clone(),
+            },
+            Partition {
+                name: "old".into(),
+                storage: old.clone(),
+            },
+        ],
+        "new",
+    )?) as Arc<dyn Storage>;
+    router.upsert(pattern.to_string(), overlay);
+
+    // 2. Backfill old → new. No new writes reach old past step 1, so a
+    //    single idempotent pass suffices.
     for repo in &repos {
         copy_repo(old.as_ref(), new_backend.as_ref(), repo, &mut report).await?;
     }
 
-    // Cutover — new writes now land on the new backend.
+    // 3. Collapse — drop the old volume from the read path.
     router.upsert(pattern.to_string(), new_backend.clone());
     report.cutover = true;
-
-    // Pass 2 — catch anything written to the old backend during pass 1.
-    for repo in &repos {
-        copy_repo(old.as_ref(), new_backend.as_ref(), repo, &mut report).await?;
-    }
 
     // Drain — delete migrated repos' manifests from the old backend, then
     // GC it so the orphaned blobs (blobs are content-addressed per root)

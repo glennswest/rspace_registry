@@ -46,6 +46,21 @@ pub struct AppState {
     pub realm: String,
     /// When set, exposes `POST /admin/gc` as an authenticated trigger.
     pub admin_enabled: bool,
+    /// Registry of background admin jobs (async migrations).
+    pub jobs: crate::jobs::Jobs,
+    /// Named repo classes declared via `--repo-class`, exposed at
+    /// `GET /admin/repo-classes`. Each is sugar for a `<name>/*` route rule.
+    pub classes: Vec<RepoClass>,
+}
+
+/// A named repo class: readable sugar over a `<name>/*` glob route.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepoClass {
+    pub name: String,
+    /// The route pattern this class expands to (e.g. `data/*`).
+    pub pattern: String,
+    /// The volume path backing the class.
+    pub root: String,
 }
 
 impl AppState {
@@ -57,6 +72,8 @@ impl AppState {
             auth: None,
             realm: "rspace-registry".to_string(),
             admin_enabled: true,
+            jobs: crate::jobs::Jobs::default(),
+            classes: Vec::new(),
         }
     }
 
@@ -67,6 +84,11 @@ impl AppState {
 
     pub fn with_router(mut self, router: Arc<RepoRouter>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    pub fn with_classes(mut self, classes: Vec<RepoClass>) -> Self {
+        self.classes = classes;
         self
     }
 }
@@ -156,6 +178,15 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
             if path == "/admin/gc" && method == Method::POST {
                 return into_response(handlers::gc_run(storage).await);
             }
+            // Async job status (generic — not tied to a storage mode).
+            if path == "/admin/jobs" && (method == Method::GET || method == Method::HEAD) {
+                return into_response(handlers::jobs_list(state.jobs.clone()).await);
+            }
+            if let Some(id) = path.strip_prefix("/admin/jobs/") {
+                if !id.is_empty() && (method == Method::GET || method == Method::HEAD) {
+                    return into_response(handlers::job_get(state.jobs.clone(), id).await);
+                }
+            }
             if let Some(multi) = state.multi.as_ref() {
                 if path == "/admin/partitions" && (method == Method::GET || method == Method::HEAD)
                 {
@@ -211,7 +242,14 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
                             .into_response();
                         }
                     };
-                    return into_response(handlers::repo_migrate(router.clone(), req).await);
+                    return into_response(
+                        handlers::repo_migrate(router.clone(), state.jobs.clone(), req).await,
+                    );
+                }
+                if path == "/admin/repo-classes"
+                    && (method == Method::GET || method == Method::HEAD)
+                {
+                    return into_response(handlers::repo_classes_list(state.classes.clone()).await);
                 }
             }
         }

@@ -293,3 +293,175 @@ async fn get(app: &axum::Router, path: &str) -> (StatusCode, Vec<u8>) {
         .to_vec();
     (status, bytes)
 }
+
+async fn get_json(app: &axum::Router, path: &str) -> (StatusCode, Value) {
+    let (status, bytes) = get(app, path).await;
+    let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, v)
+}
+
+async fn post_json(app: &axum::Router, path: &str, body: &Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Build a router+state over a `data/*` old volume seeded with one image.
+fn http_harness(
+    old: Arc<FsStorage>,
+    default: Arc<FsStorage>,
+    classes: Vec<rspace_registry::router::RepoClass>,
+) -> axum::Router {
+    let router = Arc::new(
+        RepoRouter::new(vec![
+            RouteRule {
+                pattern: "data/*".into(),
+                backend: old as Arc<dyn Storage>,
+            },
+            RouteRule {
+                pattern: "*".into(),
+                backend: default as Arc<dyn Storage>,
+            },
+        ])
+        .unwrap(),
+    );
+    let storage: Arc<dyn Storage> = router.clone();
+    let state = AppState::new(storage)
+        .with_router(router)
+        .with_classes(classes);
+    build_router(state)
+}
+
+#[tokio::test]
+async fn async_migration_runs_as_a_background_job() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let def_dir = tempfile::tempdir().unwrap();
+    let new_dir = tempfile::tempdir().unwrap();
+
+    let old = Arc::new(FsStorage::new(old_dir.path()).unwrap());
+    let default = Arc::new(FsStorage::new(def_dir.path()).unwrap());
+    seed_image(old.as_ref(), "data/vol1").await;
+    let app = http_harness(old, default, vec![]);
+
+    // Kick off an async migration — expect 202 + a job id.
+    let (status, v) = post_json(
+        &app,
+        "/admin/repo-migrate",
+        &serde_json::json!({
+            "pattern": "data/*",
+            "to": new_dir.path().to_str().unwrap(),
+            "drain": true,
+            "async": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let job_id = v["job_id"].as_str().unwrap().to_string();
+    assert_eq!(v["state"], "running");
+
+    // Poll until the background task finishes.
+    let mut done = None;
+    for _ in 0..200 {
+        let (s, job) = get_json(&app, &format!("/admin/jobs/{job_id}")).await;
+        assert_eq!(s, StatusCode::OK);
+        match job["state"].as_str().unwrap() {
+            "done" => {
+                done = Some(job);
+                break;
+            }
+            "failed" => panic!("job failed: {job:?}"),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    }
+    let job = done.expect("job completed");
+    assert_eq!(job["report"]["repos_migrated"], 1);
+    assert_eq!(job["report"]["cutover"], true);
+    assert_eq!(job["report"]["blobs_purged"], 2);
+
+    // And the route actually cut over.
+    let (status, _) = get(&app, "/v2/data/vol1/manifests/latest").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The job shows up in the list too.
+    let (s, list) = get_json(&app, "/admin/jobs").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list["jobs"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn migrate_by_class_name_expands_to_glob() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let def_dir = tempfile::tempdir().unwrap();
+    let new_dir = tempfile::tempdir().unwrap();
+
+    let old = Arc::new(FsStorage::new(old_dir.path()).unwrap());
+    let default = Arc::new(FsStorage::new(def_dir.path()).unwrap());
+    seed_image(old.as_ref(), "data/vol1").await;
+    let app = http_harness(old, default, vec![]);
+
+    // Migrate by class name — expands to data/*.
+    let (status, v) = post_json(
+        &app,
+        "/admin/repo-migrate",
+        &serde_json::json!({
+            "class": "data",
+            "to": new_dir.path().to_str().unwrap(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["pattern"], "data/*");
+    assert_eq!(v["repos_migrated"], 1);
+    assert_eq!(v["cutover"], true);
+}
+
+#[tokio::test]
+async fn repo_classes_endpoint_lists_declared_classes() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let def_dir = tempfile::tempdir().unwrap();
+    let old = Arc::new(FsStorage::new(old_dir.path()).unwrap());
+    let default = Arc::new(FsStorage::new(def_dir.path()).unwrap());
+
+    let classes = vec![
+        rspace_registry::router::RepoClass {
+            name: "data".into(),
+            pattern: "data/*".into(),
+            root: "/mnt/bulk".into(),
+        },
+        rspace_registry::router::RepoClass {
+            name: "microvm".into(),
+            pattern: "microvm/*".into(),
+            root: "/mnt/nvme".into(),
+        },
+    ];
+    let app = http_harness(old, default, classes);
+
+    let (status, v) = get_json(&app, "/admin/repo-classes").await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = v["classes"].as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "data");
+    assert_eq!(arr[0]["pattern"], "data/*");
+    assert_eq!(arr[1]["root"], "/mnt/nvme");
+}
+
+#[tokio::test]
+async fn unknown_job_id_is_404() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let def_dir = tempfile::tempdir().unwrap();
+    let old = Arc::new(FsStorage::new(old_dir.path()).unwrap());
+    let default = Arc::new(FsStorage::new(def_dir.path()).unwrap());
+    let app = http_harness(old, default, vec![]);
+    let (status, _) = get(&app, "/admin/jobs/does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

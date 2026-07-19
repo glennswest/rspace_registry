@@ -108,17 +108,27 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.4.0` — live class migration between volumes
+### Current Version: `v0.5.0` — class migration, hardened
 
-Repo classes placed via `--repo-root` (system/partner/customer/microvm/
-data) can now be **moved to a different volume with no downtime**:
-`migrate::run` does copy pass → atomic cutover (`RepoRouter::upsert`) →
-catch-up pass → optional drain (delete old manifests + GC the old
-volume). Exposed as `POST /admin/repo-migrate { pattern, to, drain }`.
-Idempotent/restartable; more-specific rules stay pinned. Motivated by
-separating bursty, non-dedupable classes (data volumes, 1000s of
-microVMs) from boot-critical system images and relocating them onto
-their own volumes.
+Builds on v0.4.0 migration:
+- **Zero-miss cutover** — `migrate::run` overlay-cuts-over first
+  (`MultiStore` new-primary + old-fallback), backfills old→new, then
+  collapses to new. Reads never miss mid-migration; a failed backfill
+  leaves a correct overlay.
+- **Background jobs** — `POST /admin/repo-migrate {async:true}` → 202 +
+  job id; poll `GET /admin/jobs[/<id>]`. In-memory `jobs` registry.
+- **Named classes** — `--repo-class name=/path` = sugar for
+  `name/*=/path`; `GET /admin/repo-classes`; migrate accepts
+  `{class:"data"}`.
+- **Offline CLI** — `rspace-registry migrate --pattern|--class --to
+  [--drain]`.
+
+### Prior Version: `v0.4.0` — live class migration between volumes
+
+`migrate::run` + `POST /admin/repo-migrate` — move a `--repo-root`
+class between volumes. Motivated by separating bursty, non-dedupable
+classes (data volumes, 1000s of microVMs) from boot-critical system
+images. Superseded by the v0.5.0 zero-miss/async/named-class work.
 
 ### Prior Version: `v0.3.0` — cluster-delegated auth (`--auth k8s`)
 
@@ -193,6 +203,11 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-18: Class migration hardened (v0.5.0) — zero-miss overlay
+  cutover (MultiStore new-primary + old-fallback), background jobs
+  (`{async:true}` → `GET /admin/jobs[/<id>]`), named classes
+  (`--repo-class`, `GET /admin/repo-classes`, `{class}` in migrate),
+  offline `migrate` subcommand.
 - 2026-07-18: Live class migration (`migrate::run` +
   `POST /admin/repo-migrate`) — move a `--repo-root` class between
   volumes with no downtime: copy → cutover → catch-up → optional drain

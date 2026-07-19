@@ -8,21 +8,29 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
-**v0.4.0 — live class migration between volumes.** Repo classes
-(`system/*`, `partner/*`, `customer/*`, `microvm/*`, `data/*`, …) are
-placed on volumes with `--repo-root`; you can now **move a whole class
-to a different volume with no downtime**:
+**v0.5.0 — class migration, hardened.** Declare repo classes on their
+own volumes and **move a whole class to a different volume with a
+zero-miss cutover** — synchronously or as a background job:
 
 ```bash
-# Relocate the bursty, non-dedupable data-volume class off boot-critical
-# storage — copy live, cut over, then reclaim the old volume.
+# Each class on its own volume (sugar for `--repo-root system/*=...` etc.):
+rspace-registry --repo-class system=/mnt/system \
+                --repo-class microvm=/mnt/nvme \
+                --repo-class data=/mnt/bulk
+
+# Relocate the bursty, non-dedupable data class off boot-critical storage,
+# in the background, draining the old volume — poll the returned job:
 curl -X POST localhost:5000/admin/repo-migrate \
-  -d '{"pattern":"data/*","to":"/mnt/bulk2","drain":true}'
+  -d '{"class":"data","to":"/mnt/bulk2","drain":true,"async":true}'
+# → {"job_id":"...","state":"running"}
+curl localhost:5000/admin/jobs/<id>          # running → done (+report)
 ```
 
-Copy pass → atomic cutover → catch-up pass → optional drain (delete +
-GC the old volume). Idempotent and restartable (content-addressed); a
-more-specific rule like `data/keep` stays pinned.
+The migration **overlay-cuts-over first** (new volume primary, old as
+read-fallback), backfills old → new, then collapses onto the new volume —
+so reads never miss, even mid-migration. Idempotent/restartable; a
+more-specific rule like `data/keep` stays pinned. Also available offline:
+`rspace-registry migrate --class data --to /mnt/bulk2 --drain`.
 
 **v0.3.0 — cluster-delegated auth (`--auth k8s`).** On top of the
 v0.2.0 surface (full OCI Distribution Spec v1.1 push/pull, htpasswd
@@ -49,11 +57,13 @@ rspace-registry --listen 0.0.0.0:5000 --data /var/lib/rspace_registry \
 podman login -u unused -p "$(kubectl create token my-sa)" registry.example:5000
 ```
 
-Earlier: `MultiStore` composes N partitions with a background
-reconciler; `--repo-root pattern=/path` places repos on different
-mounts; `GET /admin/partitions`, `POST /admin/replicate`,
+Earlier: cluster-delegated auth (`--auth k8s`, TokenReview + SAR);
+`MultiStore` composes N partitions with a background reconciler;
+`--repo-root pattern=/path` places repos on different mounts. Admin
+endpoints: `GET /admin/partitions`, `POST /admin/replicate`,
 `GET /admin/repo-roots`, `POST /admin/repo-root`,
-`POST /admin/repo-migrate` admin endpoints.
+`POST /admin/repo-migrate`, `GET /admin/repo-classes`,
+`GET /admin/jobs[/<id>]`, `POST /admin/gc`.
 
 Active-partition pivot is handled by another component outside the
 registry. See [CLAUDE.md](./CLAUDE.md) for the full work plan.

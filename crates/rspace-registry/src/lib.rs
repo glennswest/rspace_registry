@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod error;
 pub mod handlers;
+pub mod jobs;
 pub mod k8s;
 pub mod router;
 

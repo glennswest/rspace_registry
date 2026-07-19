@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [v0.5.0] — 2026-07-18
+
+Hardens class migration (v0.4.0) into a production-shaped feature:
+zero-miss cutover, background jobs, named classes, and an offline CLI
+path.
+
+### Changed
+
+- **BREAKING (behavior): migration is now zero-miss.** `migrate::run`
+  no longer does copy → cutover → catch-up (which had a small read-miss
+  window). It instead **overlay-cuts-over first** — repointing the rule
+  at a `MultiStore` whose primary is the new volume and whose fallback is
+  the old — then backfills old → new, then collapses onto the new volume.
+  Reads resolve new-first and fall back to old for the whole migration, so
+  nothing is ever briefly unreachable, even before a byte is copied. A
+  failed backfill leaves the route on the overlay (a correct union), so
+  failure never loses reachability.
+
+### Added
+
+- **Background migrations** — `POST /admin/repo-migrate` accepts
+  `"async": true`, returns `202` with a `job_id`, and runs the migration
+  on a background task. Poll `GET /admin/jobs/<id>` (or list `GET
+  /admin/jobs`) for `running` / `done` (+report) / `failed` (+error). A
+  multi-TB class move no longer holds the admin request open. In-memory,
+  process-local registry (`jobs` module); a restart forgets in-flight
+  jobs, which are recovered by re-issuing the idempotent migration.
+- **Named repo classes** — `--repo-class <name>=<path>` (repeatable) is
+  readable sugar for a `--repo-root <name>/*=<path>` rule, so you declare
+  `system`, `partner`, `customer`, `microvm`, `data`, … each on its own
+  volume. Composes with `--repo-root` (longest-match still wins).
+  `GET /admin/repo-classes` lists them; `POST /admin/repo-migrate` accepts
+  `"class": "data"` (expands to `data/*`).
+- **Offline `migrate` subcommand** — `rspace-registry migrate
+  --pattern <p> | --class <c> --to <path> [--drain]` moves a class between
+  volumes as a one-shot process (build the current layout with
+  `--repo-root`/`--repo-class`), for maintenance windows or when the
+  server isn't running.
+- **`MultiStore` reuse** inside `migrate` for the read-overlay; no new
+  storage type.
+- **Tests** — async job lifecycle (202 → poll → done + report + cutover),
+  migrate-by-class-name, `GET /admin/repo-classes`, unknown-job 404, on
+  top of the existing zero-miss/drain/idempotent/pinning suite.
+
+### Notes
+
+- In-flight uploads: a session started on the old volume before the
+  overlay cutover is backend-local; a later chunk routes to the new
+  primary and the caller retries onto the new volume. Finished blobs and
+  manifests are unaffected. (Documented on `migrate`.)
+
 ## [v0.4.0] — 2026-07-18
 
 Live class migration between storage roots. `--repo-root` already places
