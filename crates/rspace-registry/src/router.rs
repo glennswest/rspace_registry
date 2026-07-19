@@ -110,6 +110,12 @@ async fn require_auth(State(state): State<AppState>, req: Request, next: Next) -
     if req.method() == Method::GET && (req.uri().path() == "/v2/" || req.uri().path() == "/v2") {
         return next.run(req).await;
     }
+    // The token-exchange endpoint performs its own credential check (it IS
+    // the thing that answers the Bearer challenge), so the blanket auth
+    // middleware must not gate it.
+    if req.uri().path() == "/token" {
+        return next.run(req).await;
+    }
     match auth {
         Auth::Htpasswd(htpasswd) => match auth::parse_basic(req.headers()) {
             Some((u, p)) if htpasswd.verify(&u, &p) => next.run(req).await,
@@ -162,6 +168,21 @@ async fn dispatch(State(state): State<AppState>, req: Request) -> Response {
     };
 
     let storage = state.storage.clone();
+
+    // ---------------- /token (Docker distribution token endpoint) -------
+    if path == "/token" {
+        return match method {
+            Method::GET => match state.auth.as_ref() {
+                Some(Auth::K8s(k8s_auth)) => {
+                    k8s::token_endpoint(k8s_auth, &headers, query.get("scope").map(|s| s.as_str()))
+                        .await
+                }
+                // Only meaningful under k8s bearer auth.
+                _ => not_found(),
+            },
+            _ => method_not_allowed(),
+        };
+    }
 
     // ---------------- /v2/ root -----------------------------------------
     if path == "/v2" || path == "/v2/" {

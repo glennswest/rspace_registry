@@ -110,6 +110,14 @@ struct Cli {
     #[arg(long = "auth-cache-ttl", default_value = "2m", global = true)]
     auth_cache_ttl: String,
 
+    /// `--auth k8s`: absolute URL of this registry's token-exchange
+    /// endpoint, advertised as `realm=` in the Bearer challenge. Defaults
+    /// to `http(s)://<listen>/token` (https when `--cert` is set). Set this
+    /// to the externally-reachable URL in production, since `--listen` may
+    /// bind `0.0.0.0`.
+    #[arg(long = "auth-k8s-token-url", value_name = "url", global = true)]
+    auth_k8s_token_url: Option<String>,
+
     /// `--auth k8s`: skip auth for loopback (`127.0.0.1`/`::1`) clients — the
     /// boot-order fast path so a node can serve preloaded images before the
     /// API server exists.
@@ -436,13 +444,17 @@ fn build_auth(cli: &Cli) -> Result<Option<Auth>> {
             let cache_ttl = parse_duration(&cli.auth_cache_ttl)?;
             let reviewer = ApiReviewer::in_cluster(cli.auth_k8s_api.as_deref())
                 .context("initialising Kubernetes API reviewer for --auth k8s")?;
+            let token_realm = cli.auth_k8s_token_url.clone().unwrap_or_else(|| {
+                let scheme = if cli.cert.is_some() { "https" } else { "http" };
+                format!("{scheme}://{}/token", cli.listen)
+            });
             let cfg = K8sAuthConfig {
                 resource_group: group.to_string(),
                 resource: resource.to_string(),
                 default_namespace: cli.auth_k8s_default_ns.clone(),
                 cache_ttl,
                 allow_loopback: cli.auth_allow_loopback,
-                token_realm: format!("{}/token", cli.realm),
+                token_realm,
                 service: "rspace-registry".to_string(),
             };
             tracing::info!(

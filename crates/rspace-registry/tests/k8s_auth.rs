@@ -100,6 +100,30 @@ async fn send(
     (resp.status(), resp.headers().clone())
 }
 
+async fn send_body(
+    app: &axum::Router,
+    method: Method,
+    path: &str,
+    auth: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    use http_body_util::BodyExt;
+    let mut builder = Request::builder().method(method).uri(path);
+    if let Some(a) = auth {
+        builder = builder.header("authorization", HeaderValue::from_str(a).unwrap());
+    }
+    let req = builder.body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.expect("request");
+    let status = resp.status();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, bytes)
+}
+
 #[tokio::test]
 async fn version_check_is_unauthenticated() {
     let (app, _t) = router(false);
@@ -222,5 +246,60 @@ async fn non_loopback_peer_still_requires_auth() {
         Some(peer),
     )
     .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn token_endpoint_full_bearer_flow() {
+    use base64::Engine;
+    let (app, _t) = router(false);
+
+    // 1. Unauthed request → Bearer challenge naming the token realm.
+    let (status, headers) = send(
+        &app,
+        Method::GET,
+        "/v2/team-a/nginx/manifests/latest",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let challenge = headers.get("www-authenticate").unwrap().to_str().unwrap();
+    assert!(challenge.contains("realm=\"rspace-registry/token\""));
+
+    // 2. Client authenticates at the token endpoint with the k8s token as
+    //    the Basic password; gets a bearer token back.
+    let creds = base64::engine::general_purpose::STANDARD.encode("unused:alice-token");
+    let (status, body) = send_body(
+        &app,
+        Method::GET,
+        "/token?service=rspace-registry&scope=repository:team-a/nginx:pull",
+        Some(&format!("Basic {creds}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = v["token"].as_str().unwrap();
+    assert_eq!(token, "alice-token");
+    assert!(v["expires_in"].as_u64().unwrap() > 0);
+
+    // 3. Retry the original request with the issued bearer token → past auth.
+    let (status, _h) = send(
+        &app,
+        Method::GET,
+        "/v2/team-a/nginx/manifests/latest",
+        Some(&format!("Bearer {token}")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND); // reached handler (manifest unknown)
+}
+
+#[tokio::test]
+async fn token_endpoint_rejects_bad_credentials() {
+    let (app, _t) = router(false);
+    let (status, _h) = send(&app, Method::GET, "/token", Some("Bearer nope"), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _h) = send(&app, Method::GET, "/token", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

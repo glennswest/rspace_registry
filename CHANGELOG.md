@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [v0.6.0] — 2026-07-19
+
+Completes phase 3 of the `--auth k8s` model (issue #2): the Docker
+distribution token-exchange endpoint the `Bearer` challenge points at.
+
+### Added
+
+- **`GET /token`** — the token endpoint named by the `Bearer` challenge's
+  `realm`. A client that follows the distribution token flow (rather than
+  presenting the token directly) authenticates here with the Kubernetes
+  token as the Basic password (`podman login` does this automatically) and
+  receives it back as the bearer token to use against `/v2/`. Response:
+  `{ "token", "access_token", "expires_in" }`. We do **not** mint a scoped
+  token of our own — the k8s token is the identity and SAR still enforces
+  authorization per request, so a granted-vs-requested scope gap can't let
+  anything through. The requested `scope` is parsed (per the distribution
+  token spec, `repository:<name>:<actions>`) for logging only.
+  Unauthenticated by the blanket middleware (it performs its own credential
+  check) and only served under `--auth k8s`.
+- **`--auth-k8s-token-url <url>`** — absolute URL advertised as the
+  challenge `realm`. Defaults to `http(s)://<listen>/token` (https when
+  `--cert` is set); set it explicitly in production since `--listen` may
+  bind `0.0.0.0`. Replaces the previous non-URL `realm` default.
+- **Tests** — `parse_scope` unit tests; token-endpoint authn (valid /
+  bad / missing credentials); and a full HTTP bearer flow: 401 challenge →
+  `GET /token` with Basic → issued bearer token → retry reaches the handler.
+
+### Notes
+
+- Phase 4 of issue #2 (a `Repository` CRD, per-namespace quotas, robot
+  accounts) remains open in the Quay-parity backlog.
+
 ## [v0.5.0] — 2026-07-18
 
 Hardens class migration (v0.4.0) into a production-shaped feature:

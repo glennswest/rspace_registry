@@ -15,6 +15,15 @@
 //! from `127.0.0.1`/`::1` skip auth entirely so the node can bootstrap with
 //! zero cluster dependency; everything else still goes through TokenReview/SAR.
 //!
+//! ## Token-exchange endpoint
+//!
+//! The `Bearer` challenge points at a `realm` URL — this registry's own
+//! `GET /token` ([`token_endpoint`]). A client that follows the flow
+//! (rather than presenting the token directly) authenticates there with the
+//! k8s token as the Basic password and receives it back as the bearer token
+//! to use against `/v2/`. We do not mint a scoped token of our own — the
+//! k8s token is the identity and SAR enforces authorization per request.
+//!
 //! ## Testability
 //!
 //! All API-server interaction sits behind the [`Reviewer`] trait. The real
@@ -250,6 +259,18 @@ impl K8sAuth {
         )
     }
 
+    /// Validate a token via TokenReview (cached). Public entry point for the
+    /// token-exchange endpoint.
+    pub async fn verify_token(&self, token: &str) -> Result<TokenVerdict, AuthReject> {
+        self.token_review_cached(token).await
+    }
+
+    /// TokenReview / SAR cache TTL in seconds — advertised as `expires_in`
+    /// by the token endpoint.
+    pub fn cache_ttl_secs(&self) -> u64 {
+        self.cfg.cache_ttl.as_secs()
+    }
+
     /// Decide whether a request may proceed.
     ///
     /// `peer` is the client socket address (for the loopback fast path); `None`
@@ -420,6 +441,83 @@ fn is_loopback(ip: IpAddr) -> bool {
                     .unwrap_or(false)
         }
     }
+}
+
+/// `GET /token` — the Docker distribution token-exchange endpoint the
+/// `Bearer` challenge points at.
+///
+/// The presented credential (Basic password or `Bearer`) is a Kubernetes
+/// token. We authenticate it via TokenReview and echo it back as the
+/// bearer token the client will present to `/v2/`. We do **not** mint a
+/// scoped token of our own: the k8s token is the identity, and
+/// authorization is enforced per-request by SubjectAccessReview — so the
+/// granted-vs-requested scope distinction collapses to "does this identity
+/// pass the SAR for the op it actually attempts". The requested `scope` is
+/// parsed for logging only.
+pub async fn token_endpoint(
+    auth: &K8sAuth,
+    headers: &HeaderMap,
+    scope: Option<&str>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let Some(token) = extract_token(headers) else {
+        return AuthReject::Unauthorized("no credentials presented to token endpoint".into())
+            .into_response(auth);
+    };
+
+    if let Some(s) = scope {
+        if let Some(parsed) = parse_scope(s) {
+            tracing::debug!(
+                resource = %parsed.0,
+                name = %parsed.1,
+                actions = %parsed.2,
+                "token endpoint: scope requested (informational; SAR enforces per-request)"
+            );
+        }
+    }
+
+    match auth.verify_token(&token).await {
+        Ok(v) if v.authenticated => {
+            let body = serde_json::json!({
+                "token": token,
+                "access_token": token,
+                "expires_in": auth.cache_ttl_secs(),
+            });
+            (StatusCode::OK, axum::Json(body)).into_response()
+        }
+        Ok(v) => AuthReject::Unauthorized(
+            v.error
+                .unwrap_or_else(|| "token failed authentication".into()),
+        )
+        .into_response(auth),
+        Err(reject) => reject.into_response(auth),
+    }
+}
+
+/// Parse a distribution token `scope` value of the form
+/// `repository:<name>:<action[,action...]>` into
+/// `(resourcetype, name, actions)`. Returns `None` if malformed.
+fn parse_scope(scope: &str) -> Option<(String, String, String)> {
+    // name itself may contain ':' only via the port in a pull-through
+    // scenario, which we don't support — split into exactly 3 from the
+    // left and right ends: resourcetype, name, actions.
+    let first = scope.find(':')?;
+    let last = scope.rfind(':')?;
+    if first == last {
+        return None;
+    }
+    let resourcetype = &scope[..first];
+    let name = &scope[first + 1..last];
+    let actions = &scope[last + 1..];
+    if resourcetype.is_empty() || name.is_empty() || actions.is_empty() {
+        return None;
+    }
+    Some((
+        resourcetype.to_string(),
+        name.to_string(),
+        actions.to_string(),
+    ))
 }
 
 /// Pull the Kubernetes token from the request. Accepts either
@@ -834,5 +932,49 @@ mod tests {
         assert_eq!(extract_token(&h).as_deref(), Some("mytoken"));
 
         assert_eq!(extract_token(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn parse_scope_splits_repository_scope() {
+        assert_eq!(
+            parse_scope("repository:team-a/nginx:pull,push"),
+            Some((
+                "repository".into(),
+                "team-a/nginx".into(),
+                "pull,push".into()
+            ))
+        );
+        assert_eq!(
+            parse_scope("repository:nginx:pull"),
+            Some(("repository".into(), "nginx".into(), "pull".into()))
+        );
+        // Malformed — no actions segment.
+        assert_eq!(parse_scope("repository:nginx"), None);
+        assert_eq!(parse_scope("garbage"), None);
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_issues_token_for_valid_credentials() {
+        use base64::Engine;
+        let a = auth_with(false, None);
+        let creds = base64::engine::general_purpose::STANDARD.encode("anyuser:good");
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::AUTHORIZATION,
+            header::HeaderValue::from_str(&format!("Basic {creds}")).unwrap(),
+        );
+        let resp = token_endpoint(&a, &h, Some("repository:team-a/nginx:pull")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_rejects_bad_and_missing_credentials() {
+        let a = auth_with(false, None);
+        // Bad token.
+        let resp = token_endpoint(&a, &bearer("nope"), None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // No credentials.
+        let resp = token_endpoint(&a, &HeaderMap::new(), None).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

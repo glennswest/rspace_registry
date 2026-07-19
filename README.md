@@ -8,6 +8,13 @@ This is a **sibling project** to rspacefs. It is developed in parallel; the inte
 
 ## Status
 
+**v0.6.0 — k8s token-exchange endpoint.** `--auth k8s` now serves the
+`GET /token` endpoint its `Bearer` challenge advertises, so clients that
+follow the full distribution token flow (e.g. `podman login`) work, not
+just those presenting the token directly. The k8s token stays the
+identity; SAR enforces authz per request. Set `--auth-k8s-token-url` to
+the externally-reachable realm URL in production.
+
 **v0.5.0 — class migration, hardened.** Declare repo classes on their
 own volumes and **move a whole class to a different volume with a
 zero-miss cutover** — synchronously or as a background job:

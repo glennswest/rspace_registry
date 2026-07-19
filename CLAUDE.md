@@ -108,7 +108,16 @@ Integration spec is at [`../rspacefs/enhancements/rspacefs-registry-head.md`](..
 
 ## Work Plan
 
-### Current Version: `v0.5.0` — class migration, hardened
+### Current Version: `v0.6.0` — k8s token-exchange endpoint
+
+Completes issue #2 phase 3: `GET /token` (the Docker distribution token
+server the Bearer challenge points at). Authenticates the presented k8s
+token via TokenReview and echoes it back as the bearer token; SAR still
+enforces authz per request (no self-minted scoped tokens). New
+`--auth-k8s-token-url` sets the challenge realm URL. Phase 4 (Repository
+CRD, quotas, robot accounts) remains in the Quay-parity backlog.
+
+### Prior Version: `v0.5.0` — class migration, hardened
 
 Builds on v0.4.0 migration:
 - **Zero-miss cutover** — `migrate::run` overlay-cuts-over first
@@ -203,6 +212,10 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-19: `--auth k8s` phase 3 (v0.6.0) — `GET /token`
+  distribution token-exchange endpoint (`k8s::token_endpoint`),
+  `--auth-k8s-token-url` realm, scope parsing (informational), full
+  bearer-flow test. Token echoed; SAR enforces per request.
 - 2026-07-18: Class migration hardened (v0.5.0) — zero-miss overlay
   cutover (MultiStore new-primary + old-fallback), background jobs
   (`{async:true}` → `GET /admin/jobs[/<id>]`), named classes
