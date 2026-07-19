@@ -1,0 +1,75 @@
+# A workload-facing registry deployment with cluster-delegated auth.
+#
+# For the on-node stormcos case (registry serving CRI-O on loopback BEFORE
+# the API server exists) run the same binary as a static pod with
+# --auth-allow-loopback instead; see docs/k8s-auth.md.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rspace-registry
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rspace-registry
+  namespace: rspace-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rspace-registry
+  template:
+    metadata:
+      labels:
+        app: rspace-registry
+    spec:
+      serviceAccountName: rspace-registry
+      containers:
+        - name: rspace-registry
+          # Replace with your built image (static binary; see README build).
+          image: rspace-registry:latest
+          args:
+            - serve
+            - --listen=0.0.0.0:5000
+            # Per-class volumes; each class on its own PVC-backed mount.
+            - --repo-class=system=/var/lib/rspace/system
+            - --repo-class=data=/var/lib/rspace/data
+            - --quota-class=data=500Gi
+            # Cluster-delegated auth.
+            - --auth=k8s
+            - --auth-k8s-default-ns=default
+            - --auth-k8s-token-url=https://registry.rspace-registry.svc:5000/token
+            - --auth-cache-ttl=2m
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: system
+              mountPath: /var/lib/rspace/system
+            - name: data
+              mountPath: /var/lib/rspace/data
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            initialDelaySeconds: 2
+            periodSeconds: 10
+      volumes:
+        - name: system
+          persistentVolumeClaim:
+            claimName: rspace-system
+        - name: data
+          persistentVolumeClaim:
+            claimName: rspace-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: rspace-registry
+spec:
+  selector:
+    app: rspace-registry
+  ports:
+    - port: 5000
+      targetPort: 5000

@@ -142,7 +142,18 @@ podman push --tls-verify=false localhost:5000/test/busybox:v1
 podman pull --tls-verify=false localhost:5000/test/busybox:v1
 ```
 
-## Project Layout (planned)
+## Documentation
+
+- **[docs/k8s-auth.md](./docs/k8s-auth.md)** — cluster-delegated auth
+  (`--auth k8s`): the request flow, RBAC model, the `/token` endpoint,
+  node boot-order / kubelet credential provider, CLI reference.
+- **[docs/storage-classes.md](./docs/storage-classes.md)** — placing repo
+  classes on volumes, per-class quotas, and zero-downtime migration.
+- **[deploy/k8s/](./deploy/k8s/)** — ready-to-apply manifests: registry
+  ServiceAccount + `auth-delegator` RBAC, optional `Repository` CRD,
+  puller/pusher ClusterRoles with example bindings, Deployment + Service.
+
+## Project Layout
 
 ```
 rspace_registry/
@@ -151,12 +162,11 @@ rspace_registry/
 ├── CLAUDE.md                   work plan
 ├── crates/
 │   ├── rspace-registry/        binary: HTTP service + CLI
-│   ├── rspace-registry-core/   library: OCI types, storage trait, GC
+│   ├── rspace-registry-core/   library: OCI types, storage trait, GC,
+│   │                           routing, migration, quotas
 │   └── rspace-registry-fs/     library: filesystem-backed storage
-└── docs/
-    ├── api.md                  OCI Distribution Spec v1.1 conformance map
-    ├── storage.md              storage backend contract
-    └── openshift.md            ImageStream / Route integration notes
+├── deploy/k8s/                 apply-ready Kubernetes manifests
+└── docs/                       operator guides
 ```
 
 ## License

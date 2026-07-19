@@ -1,0 +1,79 @@
+# "Who can pull/push from a namespace" is a RoleBinding, not registry
+# config. The registry maps a repo path `<namespace>/<name>[/...]` to a
+# namespace and runs a SubjectAccessReview per operation against the virtual
+# resource `rspace.io/repositories`, with these verbs:
+#
+#   registry op                         SAR verb
+#   ----------------------------------  --------
+#   pull   (GET/HEAD blob or manifest)  get
+#   list   (tags/list, _catalog)        list
+#   push   (upload POST/PATCH/PUT, PUT manifest)  update
+#   delete (DELETE manifest/blob)       delete
+#
+# Define reusable ClusterRoles once, then bind subjects per namespace with
+# namespaced RoleBindings (the OpenShift `system:image-puller` pattern). A
+# ClusterRole referenced by a RoleBinding only grants access in that
+# RoleBinding's namespace, so it composes with the repo→namespace mapping.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rspace-registry-puller
+rules:
+  - apiGroups: ["rspace.io"]
+    resources: ["repositories"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rspace-registry-pusher
+rules:
+  - apiGroups: ["rspace.io"]
+    resources: ["repositories"]
+    verbs: ["get", "list", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rspace-registry-maintainer
+rules:
+  - apiGroups: ["rspace.io"]
+    resources: ["repositories"]
+    verbs: ["get", "list", "update", "delete"]
+---
+# Example: team-a may pull AND push everything under repo paths `team-a/...`.
+# A user token, or `podman login -u anything -p $(kubectl create token ...)`
+# with the bound ServiceAccount, both work.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-a-push
+  namespace: team-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rspace-registry-pusher
+subjects:
+  - kind: User
+    name: alice@example.com
+    apiGroup: rbac.authorization.k8s.io
+  - kind: ServiceAccount
+    name: ci-builder
+    namespace: team-a
+---
+# Example: everyone authenticated may PULL from the shared `system` namespace
+# (base images), but not push.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: system-pull-all
+  namespace: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rspace-registry-puller
+subjects:
+  - kind: Group
+    name: system:authenticated
+    apiGroup: rbac.authorization.k8s.io

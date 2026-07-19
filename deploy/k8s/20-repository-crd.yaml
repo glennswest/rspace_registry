@@ -1,0 +1,57 @@
+# OPTIONAL. `--auth k8s` authorizes against the VIRTUAL resource
+# `rspace.io/repositories` — no CRD is required for SubjectAccessReview to
+# work (SAR checks a resource string, not a stored object), exactly as the
+# OpenShift registry authorizes against `imagestreams/layers`.
+#
+# Install this CRD only if you want:
+#   * `kubectl get repositories -n <ns>` to list repos as real objects, or
+#   * a home for per-repo metadata (quota, retention) in a later phase.
+#
+# The RBAC in 30-repository-rbac-example.yaml works with or without it.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: repositories.rspace.io
+spec:
+  group: rspace.io
+  scope: Namespaced
+  names:
+    plural: repositories
+    singular: repository
+    kind: Repository
+    shortNames:
+      - repo
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                quotaBytes:
+                  type: integer
+                  format: int64
+                  description: >-
+                    Advisory per-repo byte cap. Enforcement today is per-class
+                    via the registry's --quota flag; this field is a future
+                    home for per-repo quotas.
+            status:
+              type: object
+              properties:
+                usedBytes:
+                  type: integer
+                  format: int64
+      additionalPrinterColumns:
+        - name: Quota
+          type: integer
+          jsonPath: .spec.quotaBytes
+        - name: Used
+          type: integer
+          jsonPath: .status.usedBytes

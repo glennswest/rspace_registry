@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 2026-07-19
+- **docs/deploy:** Add `deploy/k8s/` — apply-ready manifests for `--auth k8s`:
+  registry ServiceAccount bound to `system:auth-delegator` (the only standing
+  permission it needs, for TokenReview + SAR), an optional `Repository` CRD,
+  puller/pusher/maintainer ClusterRoles matching the op→verb table with
+  example per-namespace RoleBindings, and a Deployment + Service. All four
+  validate against real k8s schemas via `kubectl --dry-run=client`.
+- **docs:** Add `docs/k8s-auth.md` (request flow, RBAC, the `/token` endpoint,
+  node boot-order + kubelet credential-provider config for stormcos, CLI
+  reference — completes phase 3's doc half of issue #2) and
+  `docs/storage-classes.md` (class placement, quotas, zero-downtime
+  migration, admin endpoints). README documentation + layout sections updated
+  to point at them.
+
 ## [v0.7.0] — 2026-07-19
 
 Per-class storage quotas (issue #2 phase 4, first slice). Caps how much a

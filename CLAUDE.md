@@ -222,6 +222,11 @@ Only write a rspacefs enhancement spec if a missing hook surfaces
 during implementation.
 
 ### Recently Completed
+- 2026-07-19: k8s deploy manifests (`deploy/k8s/`) + operator docs
+  (`docs/k8s-auth.md`, `docs/storage-classes.md`) — completes issue #2
+  phase 3's doc half (kubelet credential provider) and ships the
+  optional Repository CRD + RBAC examples. Manifests validated with
+  `kubectl --dry-run=client`.
 - 2026-07-19: Per-class storage quotas (v0.7.0) — `QuotaStorage`
   decorator over RepoRouter, enforces max-bytes/class on write →413,
   `Storage::used_bytes`, `--quota`/`--quota-class`, `GET /admin/quotas`.
