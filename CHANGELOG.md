@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 2026-07-20
+- **packaging:** Add `packaging/` — a reproducible `build-packages.sh` plus a
+  systemd unit (`rspace-registry.service`), default env file, and a reference
+  `Containerfile`. The script builds a static musl binary (glibc fallback) and
+  produces a `.rpm`, a `.deb`, and a `FROM scratch` OCI image archive, each
+  bundling the systemd unit, with a `SHA256SUMS`. Used to publish the `v0.7.0`
+  release assets.
+
 ### 2026-07-19
 - **docs/deploy:** Add `deploy/k8s/` — apply-ready manifests for `--auth k8s`:
   registry ServiceAccount bound to `system:auth-delegator` (the only standing

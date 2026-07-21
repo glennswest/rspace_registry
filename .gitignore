@@ -24,3 +24,6 @@ secrets/
 *.log
 tmp/
 temp/
+
+# Build artifacts from packaging/build-packages.sh
+/dist/

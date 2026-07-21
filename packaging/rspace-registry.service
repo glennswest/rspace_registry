@@ -1,0 +1,23 @@
+[Unit]
+Description=rspace-registry — OCI Distribution Spec v1.1 registry head
+Documentation=https://github.com/glennswest/rspace_registry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/rspace-registry/rspace-registry.env
+ExecStart=/usr/bin/rspace-registry serve $RSPACE_REGISTRY_ARGS
+Restart=on-failure
+RestartSec=2
+# Run as a transient system user; StateDirectory gives it an owned data dir.
+DynamicUser=yes
+StateDirectory=rspace_registry
+# Allow binding privileged ports if the operator lowers --listen below 1024.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

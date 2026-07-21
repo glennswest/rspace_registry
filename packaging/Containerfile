@@ -1,0 +1,14 @@
+# Reference image definition. The release image is built by
+# packaging/build-packages.sh with buildah from the static musl binary, so
+# it needs no base at all (FROM scratch). This Containerfile documents the
+# equivalent and can be built directly once the binary is staged beside it:
+#
+#   cargo build --release --target x86_64-unknown-linux-musl -p rspace-registry
+#   cp target/x86_64-unknown-linux-musl/release/rspace-registry packaging/
+#   podman build -t rspace-registry:dev -f packaging/Containerfile packaging/
+FROM scratch
+COPY rspace-registry /usr/local/bin/rspace-registry
+EXPOSE 5000
+VOLUME ["/var/lib/rspace_registry"]
+ENTRYPOINT ["/usr/local/bin/rspace-registry"]
+CMD ["serve", "--listen", "0.0.0.0:5000", "--data", "/var/lib/rspace_registry"]
